@@ -22,10 +22,13 @@ import numpy as np
 import gc
 import multiprocessing as mp
 import polars as pl
+import pandas as pd
 
 
 def split_train_test(train_ddf=None, valid_ddf=None, test_ddf=None, valid_size=0, 
                      test_size=0, split_type="sequential"):
+    if isinstance(train_ddf, pl.LazyFrame):
+        train_ddf = train_ddf.collect().to_pandas()
     num_samples = len(train_ddf)
     train_size = num_samples
     instance_IDs = np.arange(num_samples)
@@ -45,6 +48,15 @@ def split_train_test(train_ddf=None, valid_ddf=None, test_ddf=None, valid_size=0
         instance_IDs = instance_IDs[0:train_size]
     if valid_size > 0 or test_size > 0:
         train_ddf = train_ddf.loc[instance_IDs, :].reset_index()
+    
+    # Convert back to Polars LazyFrame for downstream compatibility
+    if train_ddf is not None and not isinstance(train_ddf, pl.LazyFrame):
+        train_ddf = pl.from_pandas(train_ddf).lazy()
+    if valid_ddf is not None and not isinstance(valid_ddf, pl.LazyFrame):
+        valid_ddf = pl.from_pandas(valid_ddf).lazy()
+    if test_ddf is not None and not isinstance(test_ddf, pl.LazyFrame):
+        test_ddf = pl.from_pandas(test_ddf).lazy()
+
     return train_ddf, valid_ddf, test_ddf
 
 

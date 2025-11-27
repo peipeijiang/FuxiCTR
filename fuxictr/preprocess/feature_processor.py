@@ -71,21 +71,28 @@ class FeatureProcessor(object):
         return full_feature_cols
 
     def read_data(self, data_path, data_format="csv", sep=",", n_rows=None, **kwargs):
+        if data_path is None:
+            raise ValueError("data_path cannot be None")
         if not data_path.endswith(data_format):
             data_path = os.path.join(data_path, f"*.{data_format}")
         logging.info("Reading files: " + data_path)
         file_names = sorted(glob.glob(data_path))
         assert len(file_names) > 0, f"Invalid data path: {data_path}"
+        
+        use_cols = list(self.dtype_dict.keys())
+        if self.feature_map.group_id is not None and self.feature_map.group_id not in use_cols:
+            use_cols.append(self.feature_map.group_id)
+
         if data_format == "csv":
             dfs = [
                 pl.scan_csv(source=file_name, separator=sep, dtypes=self.dtype_dict,
-                            low_memory=False, n_rows=n_rows)
+                            low_memory=False, n_rows=n_rows).select(use_cols)
                 for file_name in file_names
             ]
             ddf = pl.concat(dfs)
         elif data_format == "parquet":
             dfs = [
-                pl.scan_parquet(source=file_name, low_memory=False, n_rows=n_rows)
+                pl.scan_parquet(source=file_name, low_memory=False, n_rows=n_rows).select(use_cols)
                 for file_name in file_names
             ]
             ddf = pl.concat(dfs)
@@ -125,7 +132,7 @@ class FeatureProcessor(object):
                 ddf = ddf.with_columns(pl.col(name).fill_null(fill_na))
             if col.get("type") == "sequence" and isinstance(ddf.select(name).dtypes[0], pl.List):
                 # Convert list to "^" seperated string for unified preprocessing of parquet and csv formats
-                ddf = ddf.with_columns(pl.col(name).apply(lambda x: "^".join(map(str, x))))
+                ddf = ddf.with_columns(pl.col(name).map_elements(lambda x: "^".join(map(str, x)), return_dtype=pl.String))
         active_cols = [col["name"] for col in all_cols if col.get("active") != False]
         ddf = ddf.select(active_cols)
         return ddf

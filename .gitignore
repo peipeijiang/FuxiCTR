@@ -110,6 +110,9 @@ checkpoints
 # Parquet files
 *.parquet
 
+# Data directory
+data/
+
 # Ignore all files starting with .
 .*
 # Except for .gitignore and .github
