@@ -106,3 +106,12 @@ venv.bak/
 _build
 checkpoints
 *.csv
+
+# Parquet files
+*.parquet
+
+# Ignore all files starting with .
+.*
+# Except for .gitignore and .github
+!.gitignore
+!.github/

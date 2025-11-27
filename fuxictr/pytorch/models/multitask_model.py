@@ -103,11 +103,29 @@ class MultiTaskModel(BaseModel):
 
     def add_loss(self, return_dict, y_true):
         labels = self.feature_map.labels
-        loss = [self.loss_fn[i](return_dict["{}_pred".format(labels[i])], y_true[i], reduction='mean')
-                for i in range(len(labels))]
+        loss_list = []
+        for i in range(len(labels)):
+            y_pred = return_dict["{}_pred".format(labels[i])]
+            y_target = y_true[i]
+            
+            # Mask out labels with value -1
+            mask = y_target != -1
+            if mask.all():
+                loss = self.loss_fn[i](y_pred, y_target, reduction='mean')
+            else:
+                y_pred_valid = y_pred[mask]
+                y_target_valid = y_target[mask]
+                if len(y_target_valid) > 0:
+                    loss = self.loss_fn[i](y_pred_valid, y_target_valid, reduction='mean')
+                else:
+                    loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+            loss_list.append(loss)
+
         if self.loss_weight == 'EQ':
             # Default: All losses are weighted equally
-            loss = torch.sum(torch.stack(loss))
+            loss = torch.sum(torch.stack(loss_list))
+        else:
+            loss = loss_list
         return loss
 
     def compute_loss(self, return_dict, y_true):
