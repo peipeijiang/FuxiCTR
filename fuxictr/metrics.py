@@ -31,15 +31,15 @@ def evaluate_metrics(y_true, y_pred, metrics, group_id=None, threshold=0.5):
             return_dict[metric] = log_loss(y_true, y_pred, eps=1e-7)
         elif metric == 'AUC':
             return_dict[metric] = roc_auc_score(y_true, y_pred)
-        elif metric == 'accuracy':
+        elif metric.lower() == 'accuracy':
             return_dict[metric] = accuracy_score(y_true, np.where(y_pred > threshold, 1, 0))
-        elif metric == 'precision':
+        elif metric.lower() == 'precision':
             return_dict[metric] = precision_score(y_true, np.where(y_pred > threshold, 1, 0))
-        elif metric == 'recall':
+        elif metric.lower() == 'recall':
             return_dict[metric] = recall_score(y_true, np.where(y_pred > threshold, 1, 0))
-        elif metric == 'f1':
+        elif metric.lower() == 'f1':
             return_dict[metric] = f1_score(y_true, np.where(y_pred > threshold, 1, 0))
-        elif metric == 'ks':
+        elif metric.lower() == 'ks':
             fpr, tpr, thresholds = roc_curve(y_true, y_pred)
             return_dict[metric] = max(tpr - fpr)
         elif metric in ["gAUC", "avgAUC", "MRR"] or metric.startswith("NDCG"):

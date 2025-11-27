@@ -1,0 +1,33 @@
+all_seeds_processed:
+  data_root: ../../../data/
+  data_format: parquet
+  train_data: ../../../data/all_seeds
+  valid_data: ../../../data/all_seeds
+  test_data: ../../../data/all_seeds
+  train_size: 0.8
+  valid_size: 0.1
+  test_size: 0.1
+  min_categr_count: 1
+  feature_cols:
+    [ { name: [ area_tag, age_tag, manufacture_tag, gender_tag, product, call_30_days_max_tag, call_30_days_min_tag, 
+                call_30_days_most_tag, call_90_days_max_tag, call_90_days_min_tag, call_90_days_most_tag, call_total_max_tag, 
+                call_total_min_tag, call_total_most_tag],
+        active: True, dtype: str, type: categorical },
+      { name: [algmodel_15_days_cnt, algmodel_30_days_cnt, algmodel_90_days_cnt, sms_total_click_cnt, sms_total_deliver_cnt,
+               sms_180_days_click_cnt, sms_90_days_click_cnt, sms_30_days_click_cnt, sms_180_days_deliver_cnt, sms_90_days_deliver_cnt, 
+               sms_30_days_deliver_cnt, call_total_deliver_cnt, call_total_click_cnt, call_180_days_sum_duration, call_90_days_sum_duration, 
+               call_30_days_sum_duration, call_180_days_deliver_cnt, call_90_days_deliver_cnt, call_30_days_deliver_cnt, call_180_days_click_cnt, 
+               call_90_days_click_cnt, call_30_days_click_cnt, hit_total_cnt, hit_180_days_hit_cnt, hit_90_days_hit_cnt, hit_60_days_hit_cnt, 
+               hit_30_days_hit_cnt, hit_15_days_hit_cnt, hit_180_days_unhit_cnt, hit_90_days_unhit_cnt, hit_60_days_unhit_cnt, hit_30_days_unhit_cnt,
+                hit_15_days_unhit_cnt, hit_180_days_product_cnt, hit_90_days_product_cnt, hit_60_days_product_cnt, hit_30_days_product_cnt, hit_15_days_product_cnt, 
+                deliver_180_product_cnt, deliver_90_product_cnt, deliver_30_product_cnt, myhit_hit_180_days_cnt, myhit_hit_60_days_cnt, myhit_hit_30_days_cnt, 
+                myhit_unhit_180_days_cnt, myhit_unhit_60_days_cnt, myhit_unhit_30_days_cnt, mymodel_cnt],
+        active: True, dtype: float, type: numeric },
+        {name:[appInstalls, outerBizSorted, outerModelCleanSorted, click_180_days_product_textlist, click_90_days_product_textlist, click_30_days_product_textlist, deliver_180_days_product_textlist,
+         deliver_90_days_product_textlist, deliver_30_days_product_textlist],
+        active: True, dtype: list, type: sequence, max_len:15, encoder: MaskedAveragePooling} 
+        ]
+  label_col: [
+               { name: label_apply, dtype: float, threshold: 0.5 },
+               { name: label_credit, dtype: float, threshold: 0.3 }
+                  ]
