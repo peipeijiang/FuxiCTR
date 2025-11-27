@@ -16,14 +16,14 @@
 # =========================================================================
 
 
-from sklearn.metrics import roc_auc_score, log_loss, accuracy_score
+from sklearn.metrics import roc_auc_score, log_loss, accuracy_score, precision_score, recall_score, f1_score, roc_curve
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
 from collections import OrderedDict
 
 
-def evaluate_metrics(y_true, y_pred, metrics, group_id=None):
+def evaluate_metrics(y_true, y_pred, metrics, group_id=None, threshold=0.5):
     return_dict = OrderedDict()
     group_metrics = []
     for metric in metrics:
@@ -31,6 +31,17 @@ def evaluate_metrics(y_true, y_pred, metrics, group_id=None):
             return_dict[metric] = log_loss(y_true, y_pred, eps=1e-7)
         elif metric == 'AUC':
             return_dict[metric] = roc_auc_score(y_true, y_pred)
+        elif metric == 'accuracy':
+            return_dict[metric] = accuracy_score(y_true, np.where(y_pred > threshold, 1, 0))
+        elif metric == 'precision':
+            return_dict[metric] = precision_score(y_true, np.where(y_pred > threshold, 1, 0))
+        elif metric == 'recall':
+            return_dict[metric] = recall_score(y_true, np.where(y_pred > threshold, 1, 0))
+        elif metric == 'f1':
+            return_dict[metric] = f1_score(y_true, np.where(y_pred > threshold, 1, 0))
+        elif metric == 'ks':
+            fpr, tpr, thresholds = roc_curve(y_true, y_pred)
+            return_dict[metric] = max(tpr - fpr)
         elif metric in ["gAUC", "avgAUC", "MRR"] or metric.startswith("NDCG"):
             return_dict[metric] = 0
             group_metrics.append(metric)

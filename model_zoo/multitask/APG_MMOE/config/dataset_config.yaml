@@ -28,6 +28,6 @@ all_seeds_processed:
         active: True, dtype: list, type: sequence, max_len:15, encoder: MaskedAveragePooling} 
         ]
   label_col: [
-               { name: label_apply, dtype: float },
-               { name: label_credit, dtype: float }
+               { name: label_apply, dtype: float, threshold: 0.5 },
+               { name: label_credit, dtype: float, threshold: 0.3 }
                   ]

@@ -57,6 +57,7 @@ class MultiTaskModel(BaseModel):
                                              net_regularizer=net_regularizer,
                                              reduce_lr_on_plateau=reduce_lr_on_plateau,
                                              **kwargs)
+        self.label_col = kwargs.get("label_col", [])
         self.device = get_device(gpu)
         self.num_tasks = num_tasks
         self.loss_weight = loss_weight
@@ -157,10 +158,18 @@ class MultiTaskModel(BaseModel):
             for i in range(len(labels)):
                 y_pred = np.array(y_pred_all[labels[i]], np.float64)
                 y_true = np.array(y_true_all[labels[i]], np.float64)
+                
+                threshold = 0.5
+                if self.label_col:
+                    for col in self.label_col:
+                        if col["name"] == labels[i]:
+                            threshold = col.get("threshold", 0.5)
+                            break
+
                 if metrics is not None:
-                    val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id)
+                    val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id, threshold)
                 else:
-                    val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id)
+                    val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id, threshold)
                 logging.info('[Task: {}][Metrics] '.format(labels[i]) + ' - '.join(
                     '{}: {:.6f}'.format(k, v) for k, v in val_logs.items()))
                 for k, v in val_logs.items():

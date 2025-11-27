@@ -260,8 +260,8 @@ class BaseModel(nn.Module):
             y_pred = np.array(y_pred, np.float64)
             return y_pred
 
-    def evaluate_metrics(self, y_true, y_pred, metrics, group_id=None):
-        return evaluate_metrics(y_true, y_pred, metrics, group_id)
+    def evaluate_metrics(self, y_true, y_pred, metrics, group_id=None, threshold=0.5):
+        return evaluate_metrics(y_true, y_pred, metrics, group_id, threshold)
 
     def save_weights(self, checkpoint):
         torch.save(self.state_dict(), checkpoint)

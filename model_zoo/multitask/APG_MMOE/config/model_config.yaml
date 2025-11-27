@@ -16,7 +16,7 @@ APG_MMOE_test:
     model: APG_MMOE
     dataset_id: all_seeds_processed
     loss: [binary_crossentropy, binary_crossentropy]
-    metrics: [AUC, logloss]
+    metrics: [AUC, ks, recall, precision, f1]
     task: [binary_classification, binary_classification]
     num_tasks: 2
     optimizer: adam
