@@ -118,3 +118,6 @@ data/
 # Except for .gitignore and .github
 !.gitignore
 !.github/
+
+# Ignore dataset config files
+dataset_config.yaml
