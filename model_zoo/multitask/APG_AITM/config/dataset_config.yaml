@@ -5,6 +5,7 @@ all_seeds_processed:
   valid_data: ../../../data/all_seeds
   test_data: ../../../data/all_seeds
   infer_data: ../../../data/all_seeds
+  split_type: random
   train_size: 0.8
   valid_size: 0.1
   test_size: 0.1
@@ -28,7 +29,7 @@ all_seeds_processed:
          deliver_90_days_product_textlist, deliver_30_days_product_textlist],
         active: True, dtype: list, type: sequence, max_len:15, encoder: MaskedAveragePooling} 
         ]
-  label_col: [
+  label_col: [ { name: label_register, dtype: float, threshold: 0.5},
                { name: label_apply, dtype: float, threshold: 0.5 },
                { name: label_credit, dtype: float, threshold: 0.3 }
                   ]

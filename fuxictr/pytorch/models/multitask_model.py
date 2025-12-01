@@ -158,6 +158,12 @@ class MultiTaskModel(BaseModel):
             for i in range(len(labels)):
                 y_pred = np.array(y_pred_all[labels[i]], np.float64)
                 y_true = np.array(y_true_all[labels[i]], np.float64)
+
+                # Mask out labels with value -1
+                mask = y_true != -1
+                y_true = y_true[mask]
+                y_pred = y_pred[mask]
+                group_id_i = group_id[mask] if group_id is not None else None
                 
                 threshold = 0.5
                 if self.label_col:
@@ -167,9 +173,9 @@ class MultiTaskModel(BaseModel):
                             break
 
                 if metrics is not None:
-                    val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id, threshold)
+                    val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id_i, threshold)
                 else:
-                    val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id, threshold)
+                    val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id_i, threshold)
                 logging.info('[Task: {}][Metrics] '.format(labels[i]) + ' - '.join(
                     '{}: {:.6f}'.format(k, v) for k, v in val_logs.items()))
                 for k, v in val_logs.items():
