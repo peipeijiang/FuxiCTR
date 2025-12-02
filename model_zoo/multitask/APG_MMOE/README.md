@@ -26,6 +26,20 @@ python run_expid.py --config ./config/ --expid APG_MMOE_test --mode train
 python run_expid.py --config ./config/ --expid APG_MMOE_test --mode inference
 ```
 
+### Sweep Inference
+
+To perform inference by sweeping over all possible values of the domain feature (e.g., `product`) for each input sample:
+
+```bash
+python run_expid.py --config ./config/ --expid APG_MMOE_test --mode inference --sweep
+```
+
+This mode will:
+1. Iterate through all valid values of the domain feature (excluding PAD and OOV).
+2. Generate predictions for each domain value for every input sample.
+3. Output a directory (e.g., `APG_MMOE_test_inference_result`) containing partitioned Parquet files (`part_*.parquet`).
+4. The data is in "long" format, where each input sample is duplicated for each domain value, with an additional column (e.g., `product`) indicating the domain. This format is optimized for big data platforms (Hive/Spark).
+
 ## Configuration Tutorial
 
 ### Dataset Configuration (`dataset_config.yaml`)

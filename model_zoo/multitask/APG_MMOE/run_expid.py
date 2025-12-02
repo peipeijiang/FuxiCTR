@@ -1,6 +1,8 @@
 import os
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
 import sys
+sys.path.append(os.path.abspath("../../.."))
+sys.path.append(os.path.abspath("../common")) # Add common directory to path
 import logging
 import fuxictr_version
 from fuxictr import datasets
@@ -17,6 +19,7 @@ import glob
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from sweep_inference import sweep_inference # Import the new module
 
 def run_train(model, feature_map, params, args):
     train_gen, valid_gen = RankDataLoader(feature_map, stage='train', **params).make_iterator()
@@ -54,8 +57,15 @@ def run_inference(model, feature_map, params, args):
         files = [infer_data]
     data_format = 'parquet' if files[0].endswith('.parquet') else 'csv'
 
-    all_preds, all_ids = [], []
+    # Output directory setup (Parquet format for Big Data)
+    output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
+    if os.path.exists(output_dir):
+        import shutil
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
     logging.info('******** Start Inference ********')
+    logging.info(f"Results will be saved to directory: {output_dir}")
     
     import warnings
     from tqdm import tqdm
@@ -63,34 +73,74 @@ def run_inference(model, feature_map, params, args):
     logger = logging.getLogger()
     original_level = logger.level
 
-    for f in tqdm(files, desc="Inference"):
+    has_data = False
+
+    for i, f in enumerate(tqdm(files, desc="Inference")):
         logger.setLevel(logging.WARNING)
         try:
             ddf = feature_encoder.read_data(f, data_format=data_format)
             
             # Extract IDs before preprocess (which filters columns)
             ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()
-            all_ids.append(ids)
             
             # Preprocess (handles sequence conversion) and Transform
             df = feature_encoder.preprocess(ddf).collect().to_pandas()
             df = feature_encoder.transform(df)
             
-            test_gen = RankDataLoader(feature_map, stage='test', test_data=[df], batch_size=params['batch_size'], 
-                                      data_loader=DataFrameDataLoader).make_iterator()
+            current_batch_preds = None
+            if args.get('sweep', False):
+                # Identify sweep feature
+                sweep_col = params.get('domain_feature')
+                if not sweep_col and params.get('condition_features'):
+                    sweep_col = params['condition_features'][0]
+                if not sweep_col:
+                    sweep_col = 'product' # default
+                
+                current_batch_preds = sweep_inference(model, feature_map, params, df, sweep_col, feature_encoder=feature_encoder)
+            else:
+                test_gen = RankDataLoader(feature_map, stage='test', test_data=[df], batch_size=params['batch_size'], 
+                                        data_loader=DataFrameDataLoader).make_iterator()
+                
+                model._verbose = 0
+                current_batch_preds = model.predict(test_gen)
             
-            model._verbose = 0
-            all_preds.append(model.predict(test_gen))
+            if current_batch_preds is not None:
+                has_data = True
+                
+                if isinstance(current_batch_preds, pd.DataFrame):
+                    # Long format sweep result
+                    pred_df = current_batch_preds
+                    
+                    # Expand IDs to match the number of rows in pred_df
+                    n_rows_pred = len(pred_df)
+                    n_rows_ids = len(ids)
+                    if n_rows_ids > 0:
+                        n_repeats = n_rows_pred // n_rows_ids
+                        ids_expanded = pd.concat([ids] * n_repeats, axis=0, ignore_index=True)
+                    else:
+                        ids_expanded = pd.DataFrame()
+                        
+                    result_df = pd.concat([ids_expanded, pred_df], axis=1)
+                else:
+                    # Dict (Normal inference)
+                    pred_df = pd.DataFrame(current_batch_preds)
+                    result_df = pd.concat([ids.reset_index(drop=True), pred_df.reset_index(drop=True)], axis=1)
+
+                # Save as Parquet part file
+                part_file = os.path.join(output_dir, f"part_{i}.parquet")
+                result_df.to_parquet(part_file, index=False)
+            
             model._verbose = params.get('verbose', 1)
+            
+            # Explicit garbage collection
+            del ddf, df, ids, current_batch_preds
+            gc.collect()
+
         finally:
             logger.setLevel(original_level)
 
-    if all_preds:
-        final_preds = {k: np.concatenate([p[k] for p in all_preds]) for k in all_preds[0].keys()}
-        result_df = pd.concat([pd.concat(all_ids, ignore_index=True), pd.DataFrame(final_preds)], axis=1)
-        output_file = os.path.join(data_dir, f"{args['expid']}_inference_result.csv")
-        result_df.to_csv(output_file, index=False)
-        logging.info(f"Inference results saved to: {output_file}")
+    if has_data:
+        logging.info(f"Inference completed. Data saved in: {output_dir}")
     else:
         logging.warning("No data found in infer_data!")
 
@@ -100,6 +150,7 @@ if __name__ == '__main__':
     parser.add_argument('--expid', type=str, default='APG_MMOE_test', help='The experiment id to run.')
     parser.add_argument('--gpu', type=int, default=-1, help='The gpu index, -1 for cpu')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'inference'], help='The running mode.')
+    parser.add_argument('--sweep', action='store_true', help='Whether to sweep the domain feature for inference.')
     args = vars(parser.parse_args())
     
     experiment_id = args['expid']
