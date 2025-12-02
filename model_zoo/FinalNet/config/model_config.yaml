@@ -13,7 +13,7 @@ Base:
 
 FinalNet_default: # This is a config template
     model: FinalNet
-    dataset_id: jrjk_seeds_20251202_processed
+    dataset_id: jrjk_seeds_20251202_log
     loss: binary_crossentropy
     metrics: ['AUC','recall','precision','f1']
     task: binary_classification

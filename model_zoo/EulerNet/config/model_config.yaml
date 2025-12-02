@@ -36,9 +36,9 @@ EulerNet_default: # This is a config template
 
 EulerNet_test:
     model: EulerNet
-    dataset_id: tiny_parquet
+    dataset_id: jrjk_seeds_20251202_processed
     loss: 'binary_crossentropy'
-    metrics: ['logloss', 'AUC']
+    metrics: ['AUC','recall','precision','f1']
     task: binary_classification
     optimizer: adam
     shape: [52]

@@ -1,7 +1,97 @@
 ### Tiny data for tests only
-tiny_parquet:
+jrjk_seeds_20251202_log:
     data_root: ../../data/
     data_format: parquet
-    train_data: ../../data/tiny_parquet/train.parquet
-    valid_data: ../../data/tiny_parquet/valid.parquet
-    test_data: ../../data/tiny_parquet/test.parquet
+    train_data: ../../data/jrjk_seeds_20251202
+    valid_data: ../../data/jrjk_seeds_20251202
+    test_data: ../../data/jrjk_seeds_20251202
+    infer_data: ../../data/jrjk_seeds_20251202
+    split_type: random
+    train_size: 0.8
+    valid_size: 0.1
+    test_size: 0.1
+    min_categr_count: 1
+    feature_cols:
+        [ { name: [ area_tag, age_tag, manufacture_tag, gender_tag, call_30_days_max_tag, call_30_days_min_tag, 
+                    call_30_days_most_tag, call_90_days_max_tag, call_90_days_min_tag, call_90_days_most_tag, call_total_max_tag, 
+                    call_total_min_tag, call_total_most_tag],
+            active: True, dtype: str, type: categorical },
+          { name: [algmodel_15_days_cnt, algmodel_30_days_cnt, algmodel_90_days_cnt, sms_total_click_cnt, sms_total_deliver_cnt,
+                   sms_180_days_click_cnt, sms_90_days_click_cnt, sms_30_days_click_cnt, sms_180_days_deliver_cnt, sms_90_days_deliver_cnt, 
+                   sms_30_days_deliver_cnt, call_total_deliver_cnt, call_total_click_cnt, call_180_days_sum_duration, call_90_days_sum_duration, 
+                   call_30_days_sum_duration, call_180_days_deliver_cnt, call_90_days_deliver_cnt, call_30_days_deliver_cnt, call_180_days_click_cnt, 
+                   call_90_days_click_cnt, call_30_days_click_cnt, hit_total_cnt, hit_180_days_hit_cnt, hit_90_days_hit_cnt, hit_60_days_hit_cnt, 
+                   hit_30_days_hit_cnt, hit_15_days_hit_cnt, hit_180_days_unhit_cnt, hit_90_days_unhit_cnt, hit_60_days_unhit_cnt, hit_30_days_unhit_cnt,
+                    hit_15_days_unhit_cnt, hit_180_days_product_cnt, hit_90_days_product_cnt, hit_60_days_product_cnt, hit_30_days_product_cnt, hit_15_days_product_cnt, 
+                    deliver_180_product_cnt, deliver_90_product_cnt, deliver_30_product_cnt, myhit_hit_180_days_cnt, myhit_hit_60_days_cnt, myhit_hit_30_days_cnt, 
+                    myhit_unhit_180_days_cnt, myhit_unhit_60_days_cnt, myhit_unhit_30_days_cnt, click_180_kurtosis_cnt, 
+                    click_180_product_cnt, click_180_skewness_cnt, click_30_kurtosis_cnt, click_30_product_cnt, click_30_skewness_cnt, click_90_kurtosis_cnt, click_90_product_cnt, 
+                    click_90_skewness_cnt,myhit_hit_dk_id12479_180_days_cnt, myhit_hit_dk_id15929_180_days_cnt, myhit_hit_dk_id15929_30_days_cnt, myhit_hit_dk_id15929_60_days_cnt,
+                     myhit_hit_dk_id19638_180_days_cnt, myhit_hit_dk_id27236_180_days_cnt, myhit_hit_dk_id27236_30_days_cnt, myhit_hit_dk_id27236_60_days_cnt, 
+                     myhit_hit_dk_id27395_180_days_cnt, myhit_hit_dk_id27395_30_days_cnt, myhit_hit_dk_id27395_60_days_cnt, myhit_hit_dk_id28098_180_days_cnt, 
+                     myhit_hit_dk_id28098_30_days_cnt, myhit_hit_dk_id29316_30_days_cnt, myhit_hit_dk_id29316_60_days_cnt, myhit_hit_dk_id32268_180_days_cnt, 
+                     myhit_hit_dk_id32268_30_days_cnt, myhit_hit_dk_id32268_60_days_cnt, myhit_hit_dk_id33636_180_days_cnt, myhit_hit_dk_id33636_30_days_cnt, 
+                     myhit_hit_dk_id33636_60_days_cnt, myhit_hit_dk_id34429_180_days_cnt, myhit_hit_dk_id34429_30_days_cnt, myhit_hit_dk_id34429_60_days_cnt, 
+                     myhit_hit_dk_id34624_30_days_cnt, myhit_hit_dk_id34624_60_days_cnt, myhit_hit_dk_id34653_180_days_cnt, myhit_hit_dk_id34653_60_days_cnt, 
+                     myhit_hit_dk_id34672_180_days_cnt, myhit_hit_dk_id35539_180_days_cnt, myhit_hit_dk_id3591_180_days_cnt, myhit_hit_dk_id3591_30_days_cnt, 
+                     myhit_hit_dk_id3591_60_days_cnt, myhit_hit_dk_id37294_30_days_cnt, myhit_hit_dk_id37294_60_days_cnt, myhit_hit_dk_id41440_180_days_cnt, 
+                     myhit_hit_dk_id41440_30_days_cnt, myhit_hit_dk_id41440_60_days_cnt, myhit_hit_dk_id42744_180_days_cnt, myhit_hit_dk_id43799_180_days_cnt, 
+                     myhit_hit_dk_id43799_30_days_cnt, myhit_hit_dk_id43799_60_days_cnt, myhit_hit_dk_id45582_180_days_cnt, myhit_hit_dk_id45582_60_days_cnt, 
+                     myhit_hit_dk_id46681_180_days_cnt, myhit_hit_dk_id46681_30_days_cnt, myhit_hit_dk_id46681_60_days_cnt, myhit_hit_dk_id46763_180_days_cnt, 
+                     myhit_hit_dk_id46763_30_days_cnt, myhit_hit_dk_id46763_60_days_cnt, myhit_hit_dk_id47178_180_days_cnt, myhit_hit_dk_id47178_30_days_cnt, 
+                     myhit_hit_dk_id47178_60_days_cnt, myhit_hit_dk_id47292_30_days_cnt, myhit_hit_dk_id47292_60_days_cnt, myhit_hit_dk_id48470_30_days_cnt, 
+                     myhit_hit_dk_id48470_60_days_cnt, myhit_hit_dk_id48778_30_days_cnt, myhit_hit_dk_id48778_60_days_cnt, myhit_hit_dk_id49626_30_days_cnt, 
+                     myhit_unhit_dk_id12479_180_days_cnt, myhit_unhit_dk_id15929_180_days_cnt, myhit_unhit_dk_id15929_30_days_cnt, myhit_unhit_dk_id15929_60_days_cnt, 
+                     myhit_unhit_dk_id19638_180_days_cnt, myhit_unhit_dk_id27236_180_days_cnt, myhit_unhit_dk_id27236_30_days_cnt, myhit_unhit_dk_id27236_60_days_cnt, 
+                     myhit_unhit_dk_id27395_180_days_cnt, myhit_unhit_dk_id27395_30_days_cnt, myhit_unhit_dk_id27395_60_days_cnt, myhit_unhit_dk_id28098_180_days_cnt, 
+                     myhit_unhit_dk_id28098_30_days_cnt, myhit_unhit_dk_id29316_30_days_cnt, myhit_unhit_dk_id29316_60_days_cnt, myhit_unhit_dk_id32268_180_days_cnt, 
+                     myhit_unhit_dk_id32268_30_days_cnt, myhit_unhit_dk_id32268_60_days_cnt, myhit_unhit_dk_id33636_180_days_cnt, myhit_unhit_dk_id33636_30_days_cnt, 
+                     myhit_unhit_dk_id33636_60_days_cnt, myhit_unhit_dk_id34429_180_days_cnt, myhit_unhit_dk_id34429_30_days_cnt, myhit_unhit_dk_id34429_60_days_cnt, 
+                     myhit_unhit_dk_id34624_30_days_cnt, myhit_unhit_dk_id34624_60_days_cnt, myhit_unhit_dk_id34653_180_days_cnt, myhit_unhit_dk_id34653_60_days_cnt, 
+                     myhit_unhit_dk_id34672_180_days_cnt, myhit_unhit_dk_id35539_180_days_cnt, myhit_unhit_dk_id3591_180_days_cnt, myhit_unhit_dk_id3591_30_days_cnt, 
+                     myhit_unhit_dk_id3591_60_days_cnt, myhit_unhit_dk_id37294_30_days_cnt, myhit_unhit_dk_id37294_60_days_cnt, myhit_unhit_dk_id41440_180_days_cnt, 
+                     myhit_unhit_dk_id41440_30_days_cnt, myhit_unhit_dk_id41440_60_days_cnt, myhit_unhit_dk_id42744_180_days_cnt, myhit_unhit_dk_id43799_180_days_cnt, 
+                     myhit_unhit_dk_id43799_30_days_cnt, myhit_unhit_dk_id43799_60_days_cnt, myhit_unhit_dk_id45582_180_days_cnt, myhit_unhit_dk_id45582_60_days_cnt, 
+                     myhit_unhit_dk_id46681_180_days_cnt, myhit_unhit_dk_id46681_30_days_cnt, myhit_unhit_dk_id46681_60_days_cnt, myhit_unhit_dk_id46763_180_days_cnt, 
+                     myhit_unhit_dk_id46763_30_days_cnt, myhit_unhit_dk_id46763_60_days_cnt, myhit_unhit_dk_id47178_180_days_cnt, myhit_unhit_dk_id47178_30_days_cnt, 
+                     myhit_unhit_dk_id47178_60_days_cnt, myhit_unhit_dk_id47292_30_days_cnt, myhit_unhit_dk_id47292_60_days_cnt, myhit_unhit_dk_id48470_30_days_cnt, 
+                     myhit_unhit_dk_id48470_60_days_cnt, myhit_unhit_dk_id48778_30_days_cnt, myhit_unhit_dk_id48778_60_days_cnt, myhit_unhit_dk_id49626_30_days_cnt, 
+                     mymodel_dk_id27233_my_max_freq_cnt, mymodel_dk_id27236_my_max_freq_cnt, mymodel_dk_id27395_my_max_freq_cnt, mymodel_dk_id28098_my_max_freq_cnt, 
+                     mymodel_dk_id32268_my_max_freq_cnt, mymodel_dk_id33636_my_max_freq_cnt, mymodel_dk_id34429_my_max_freq_cnt, mymodel_dk_id34624_my_max_freq_cnt, 
+                     mymodel_dk_id34653_my_max_freq_cnt, mymodel_dk_id43799_my_max_freq_cnt, mymodel_dk_id46763_my_max_freq_cnt, mymodel_dk_id47178_my_max_freq_cnt, 
+                     mymodel_dk_id47292_my_max_freq_cnt, mymodel_dk_id47500_my_max_freq_cnt, mymodel_dk_id47662_my_max_freq_cnt, mymodel_dk_id47916_my_max_freq_cnt, 
+                     mymodel_dk_id47918_my_max_freq_cnt, mymodel_dk_id47922_my_max_freq_cnt, mymodel_dk_id47923_my_max_freq_cnt, mymodel_dk_id48778_my_max_freq_cnt,
+                     reportmodel_360JT_sms_applyconverate_cnt, reportmodel_360JT_sms_applyrate_cnt, reportmodel_360JT_sms_clickrate_cnt, reportmodel_360JT_sms_creditconverate_cnt, 
+                     reportmodel_360JT_sms_creditrate_cnt, reportmodel_360JT_sms_delivsum_cnt, reportmodel_360JT_sms_model_cnt, reportmodel_360JT_sms_pricerate_cnt, 
+                     reportmodel_360JT_sms_regisconverate_cnt, reportmodel_360JT_sms_regrate_cnt, reportmodel_360JT_sms_roi_cnt, reportmodel_HB_sms_applyconverate_cnt, 
+                     reportmodel_HB_sms_applyrate_cnt, reportmodel_HB_sms_clickrate_cnt, reportmodel_HB_sms_creditconverate_cnt, reportmodel_HB_sms_creditrate_cnt, 
+                     reportmodel_HB_sms_delivsum_cnt, reportmodel_HB_sms_model_cnt, reportmodel_HB_sms_pricerate_cnt, reportmodel_HB_sms_regisconverate_cnt, 
+                     reportmodel_HB_sms_regrate_cnt, reportmodel_HB_sms_roi_cnt, reportmodel_HFQ_sms_applyconverate_cnt, reportmodel_HFQ_sms_applyrate_cnt, 
+                     reportmodel_HFQ_sms_clickrate_cnt, reportmodel_HFQ_sms_creditconverate_cnt, reportmodel_HFQ_sms_creditrate_cnt, reportmodel_HFQ_sms_delivsum_cnt, 
+                     reportmodel_HFQ_sms_model_cnt, reportmodel_HFQ_sms_pricerate_cnt, reportmodel_HFQ_sms_regisconverate_cnt, reportmodel_HFQ_sms_regrate_cnt, 
+                     reportmodel_HFQ_sms_roi_cnt, reportmodel_JRJK_sms_applyconverate_cnt, reportmodel_JRJK_sms_applyrate_cnt, reportmodel_JRJK_sms_clickrate_cnt, 
+                     reportmodel_JRJK_sms_creditconverate_cnt, reportmodel_JRJK_sms_creditrate_cnt, reportmodel_JRJK_sms_delivsum_cnt, reportmodel_JRJK_sms_model_cnt, 
+                     reportmodel_JRJK_sms_pricerate_cnt, reportmodel_JRJK_sms_regisconverate_cnt, reportmodel_JRJK_sms_regrate_cnt, reportmodel_JRJK_sms_roi_cnt, 
+                     reportmodel_PPD_sms_applyconverate_cnt, reportmodel_PPD_sms_applyrate_cnt, reportmodel_PPD_sms_clickrate_cnt, reportmodel_PPD_sms_creditconverate_cnt, 
+                     reportmodel_PPD_sms_creditrate_cnt, reportmodel_PPD_sms_delivsum_cnt, reportmodel_PPD_sms_model_cnt, reportmodel_PPD_sms_pricerate_cnt, 
+                     reportmodel_PPD_sms_regisconverate_cnt, reportmodel_PPD_sms_regrate_cnt, reportmodel_PPD_sms_roi_cnt, reportmodel_XHF_sms_applyconverate_cnt, 
+                     reportmodel_XHF_sms_applyrate_cnt, reportmodel_XHF_sms_clickrate_cnt, reportmodel_XHF_sms_creditconverate_cnt, reportmodel_XHF_sms_creditrate_cnt, 
+                     reportmodel_XHF_sms_delivsum_cnt, reportmodel_XHF_sms_model_cnt, reportmodel_XHF_sms_pricerate_cnt, reportmodel_XHF_sms_regisconverate_cnt, 
+                     reportmodel_XHF_sms_regrate_cnt, reportmodel_XHF_sms_roi_cnt, reportmodel_YQG_sms_applyconverate_cnt, reportmodel_YQG_sms_applyrate_cnt, 
+                     reportmodel_YQG_sms_clickrate_cnt, reportmodel_YQG_sms_creditconverate_cnt, reportmodel_YQG_sms_creditrate_cnt, reportmodel_YQG_sms_delivsum_cnt, 
+                     reportmodel_YQG_sms_model_cnt, reportmodel_YQG_sms_pricerate_cnt, reportmodel_YQG_sms_regisconverate_cnt, reportmodel_YQG_sms_regrate_cnt, 
+                     reportmodel_YQG_sms_roi_cnt, reportmodel_YXH_sms_applyconverate_cnt, reportmodel_YXH_sms_applyrate_cnt, reportmodel_YXH_sms_clickrate_cnt, 
+                     reportmodel_YXH_sms_creditconverate_cnt, reportmodel_YXH_sms_creditrate_cnt, reportmodel_YXH_sms_delivsum_cnt, reportmodel_YXH_sms_model_cnt, 
+                     reportmodel_YXH_sms_pricerate_cnt, reportmodel_YXH_sms_regisconverate_cnt, reportmodel_YXH_sms_regrate_cnt, reportmodel_YXH_sms_roi_cnt, 
+                     reportmodel_ZAXD_sms_applyconverate_cnt, reportmodel_ZAXD_sms_applyrate_cnt, reportmodel_ZAXD_sms_clickrate_cnt, reportmodel_ZAXD_sms_creditconverate_cnt, 
+                     reportmodel_ZAXD_sms_creditrate_cnt, reportmodel_ZAXD_sms_delivsum_cnt, reportmodel_ZAXD_sms_model_cnt, reportmodel_ZAXD_sms_pricerate_cnt, 
+                     reportmodel_ZAXD_sms_regisconverate_cnt, reportmodel_ZAXD_sms_regrate_cnt, reportmodel_ZAXD_sms_roi_cnt],
+            active: True, dtype: float, type: numeric,preprocess: log, normalizer: StandardScaler},
+            {name:[appInstalls, outerBizSorted, outerModelCleanSorted, click_180_days_product_textlist, click_90_days_product_textlist, click_30_days_product_textlist, deliver_180_days_product_textlist,
+             deliver_90_days_product_textlist, deliver_30_days_product_textlist],
+            active: True, dtype: list, type: sequence, max_len:15, encoder: MaskedAveragePooling} 
+            ]
+    label_col: 
+        name: label
+        dtype: float
+        threshold: 0.5

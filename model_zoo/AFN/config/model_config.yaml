@@ -14,9 +14,9 @@ Base:
 
 AFN_test:
     model: AFN
-    dataset_id: tiny_parquet
+    dataset_id: jrjk_seeds_20251202_log
     loss: binary_crossentropy
-    metrics: ['logloss', 'AUC']
+    metrics: ['AUC','recall','precision','f1']
     task: binary_classification
     optimizer: adam
     learning_rate: 1.e-3

@@ -14,7 +14,7 @@ Base:
 
 MaskNet_test:
     model: MaskNet
-    dataset_id: tiny_parquet
+    dataset_id: jrjk_seeds_20251202_processed
     loss: 'binary_crossentropy'
     metrics: ['logloss', 'AUC']
     task: binary_classification

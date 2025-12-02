@@ -86,7 +86,7 @@ jrjk_seeds_20251202_processed:
                      reportmodel_ZAXD_sms_applyconverate_cnt, reportmodel_ZAXD_sms_applyrate_cnt, reportmodel_ZAXD_sms_clickrate_cnt, reportmodel_ZAXD_sms_creditconverate_cnt, 
                      reportmodel_ZAXD_sms_creditrate_cnt, reportmodel_ZAXD_sms_delivsum_cnt, reportmodel_ZAXD_sms_model_cnt, reportmodel_ZAXD_sms_pricerate_cnt, 
                      reportmodel_ZAXD_sms_regisconverate_cnt, reportmodel_ZAXD_sms_regrate_cnt, reportmodel_ZAXD_sms_roi_cnt],
-            active: True, dtype: float, type: numeric, preprocess: log, normalizer: StandardScaler },
+            active: True, dtype: float, type: numeric, preprocess: log, normalizer: StandardScaler},
             {name:[appInstalls, outerBizSorted, outerModelCleanSorted, click_180_days_product_textlist, click_90_days_product_textlist, click_30_days_product_textlist, deliver_180_days_product_textlist,
              deliver_90_days_product_textlist, deliver_30_days_product_textlist],
             active: True, dtype: list, type: sequence, max_len:15, encoder: MaskedAveragePooling} 

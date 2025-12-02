@@ -18,6 +18,7 @@
 import os
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
 import sys
+sys.path.append(os.path.abspath("../.."))
 import logging
 import fuxictr_version
 from fuxictr import datasets
