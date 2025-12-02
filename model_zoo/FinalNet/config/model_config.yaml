@@ -13,15 +13,15 @@ Base:
 
 FinalNet_default: # This is a config template
     model: FinalNet
-    dataset_id: TBD
+    dataset_id: jrjk_seeds_20251202_processed
     loss: binary_crossentropy
-    metrics: ['logloss', 'AUC']
+    metrics: ['AUC','recall','precision','f1']
     task: binary_classification
     optimizer: adam
-    learning_rate: 1.e-3
+    learning_rate: 1.e-4
     embedding_regularizer: 0
     net_regularizer: 0
-    batch_size: 10000
+    batch_size: 1024
     embedding_dim: 40
     block_type: "2B"
     batch_norm: True
@@ -33,7 +33,7 @@ FinalNet_default: # This is a config template
     block2_hidden_activations: null
     block2_dropout: 0
     residual_type: concat
-    epochs: 100
+    epochs: 50
     shuffle: True
     seed: 20222023
     monitor: {'AUC': 1, 'logloss': -1}
@@ -41,7 +41,7 @@ FinalNet_default: # This is a config template
 
 FinalNet_test:
     model: FinalNet
-    dataset_id: tiny_parquet
+    dataset_id: jrjk_seeds_20251202_processed
     loss: binary_crossentropy
     metrics: ['logloss', 'AUC']
     task: binary_classification

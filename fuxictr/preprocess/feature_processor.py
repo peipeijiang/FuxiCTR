@@ -404,3 +404,6 @@ class FeatureProcessor(object):
 
     def copy_from(self, src_col):
         return pl.col(src_col)
+
+    def log(self, col_name):
+        return pl.when(pl.col(col_name) < 0).then(0).otherwise(pl.col(col_name)).log1p()
