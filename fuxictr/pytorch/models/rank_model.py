@@ -21,6 +21,11 @@ import numpy as np
 import torch
 import os, sys
 import logging
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    logging.warning("TensorBoard not found. Visualization will be disabled.")
+    SummaryWriter = None
 from fuxictr.pytorch.layers import FeatureEmbeddingDict
 from fuxictr.metrics import evaluate_metrics
 from fuxictr.pytorch.torch_utils import get_device, get_optimizer, get_loss, get_regularizer
@@ -60,6 +65,10 @@ class BaseModel(nn.Module):
         self.model_dir = os.path.join(kwargs["model_root"], feature_map.dataset_id)
         self.checkpoint = os.path.abspath(os.path.join(self.model_dir, self.model_id + ".model"))
         self.validation_metrics = kwargs["metrics"]
+        if SummaryWriter:
+            self.writer = SummaryWriter(log_dir=self.model_dir)
+        else:
+            self.writer = None
 
     def compile(self, optimizer, loss, lr):
         self.optimizer = get_optimizer(optimizer, self.parameters(), lr)
@@ -198,15 +207,24 @@ class BaseModel(nn.Module):
         self.optimizer.zero_grad()
         return_dict = self.forward(batch_data)
         y_true = self.get_labels(batch_data)
-        loss = self.compute_loss(return_dict, y_true)
+        
+        # Calculate loss components for logging
+        main_loss = self.add_loss(return_dict, y_true)
+        reg_loss = self.regularization_loss()
+        loss = main_loss + reg_loss
+        
         loss.backward()
-        nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
+        grad_norm = nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
         self.optimizer.step()
-        return loss
+        return loss, main_loss, reg_loss, grad_norm
 
     def train_epoch(self, data_generator):
         self._batch_index = 0
         train_loss = 0
+        train_main_loss = 0
+        train_reg_loss = 0
+        train_grad_norm = 0
+        
         self.train()
         if self._verbose == 0:
             batch_iterator = data_generator
@@ -215,11 +233,32 @@ class BaseModel(nn.Module):
         for batch_index, batch_data in enumerate(batch_iterator):
             self._batch_index = batch_index
             self._total_steps += 1
-            loss = self.train_step(batch_data)
+            loss, main_loss, reg_loss, grad_norm = self.train_step(batch_data)
+            
             train_loss += loss.item()
+            train_main_loss += main_loss.item()
+            train_reg_loss += reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss
+            train_grad_norm += grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+
             if self._total_steps % self._eval_steps == 0:
-                logging.info("Train loss: {:.6f}".format(train_loss / self._eval_steps))
+                avg_loss = train_loss / self._eval_steps
+                avg_main_loss = train_main_loss / self._eval_steps
+                avg_reg_loss = train_reg_loss / self._eval_steps
+                avg_grad_norm = train_grad_norm / self._eval_steps
+                
+                logging.info("Train loss: {:.6f}".format(avg_loss))
+                if self.writer:
+                    self.writer.add_scalar('train/loss', avg_loss, self._total_steps)
+                    self.writer.add_scalar('train/main_loss', avg_main_loss, self._total_steps)
+                    self.writer.add_scalar('train/reg_loss', avg_reg_loss, self._total_steps)
+                    self.writer.add_scalar('train/grad_norm', avg_grad_norm, self._total_steps)
+                    self.writer.add_scalar('train/lr', self.optimizer.param_groups[0]['lr'], self._total_steps)
+                
                 train_loss = 0
+                train_main_loss = 0
+                train_reg_loss = 0
+                train_grad_norm = 0
+                
                 self.eval_step()
             if self._stop_training:
                 break
@@ -246,6 +285,9 @@ class BaseModel(nn.Module):
             else:
                 val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id)
             logging.info('[Metrics] ' + ' - '.join('{}: {:.6f}'.format(k, v) for k, v in val_logs.items()))
+            if self.writer:
+                for k, v in val_logs.items():
+                    self.writer.add_scalar(f'val_{k}', v, self._total_steps)
             return val_logs
 
     def predict(self, data_generator):

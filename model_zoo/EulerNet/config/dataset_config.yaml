@@ -1,4 +1,3 @@
-### Tiny data for tests only
 jrjk_seeds_20251202_processed:
     data_root: ../../data/
     data_format: parquet

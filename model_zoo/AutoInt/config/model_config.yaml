@@ -5,7 +5,7 @@ Base:
     early_stop_patience: 2
     pickle_feature_encoder: True
     save_best_only: True
-    eval_steps: null
+    eval_steps: 50
     debug_mode: False
     group_id: null
     use_features: null
