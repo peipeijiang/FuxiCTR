@@ -28,17 +28,17 @@ def evaluate_metrics(y_true, y_pred, metrics, group_id=None, threshold=0.5):
     group_metrics = []
     for metric in metrics:
         if metric in ['logloss', 'binary_crossentropy']:
-            return_dict[metric] = log_loss(y_true, y_pred, eps=1e-7)
+            return_dict[metric] = log_loss(y_true, y_pred)
         elif metric == 'AUC':
             return_dict[metric] = roc_auc_score(y_true, y_pred)
         elif metric.lower() == 'accuracy':
             return_dict[metric] = accuracy_score(y_true, np.where(y_pred > threshold, 1, 0))
         elif metric.lower() == 'precision':
-            return_dict[metric] = precision_score(y_true, np.where(y_pred > threshold, 1, 0))
+            return_dict[metric] = precision_score(y_true, np.where(y_pred > threshold, 1, 0), zero_division=0)
         elif metric.lower() == 'recall':
-            return_dict[metric] = recall_score(y_true, np.where(y_pred > threshold, 1, 0))
+            return_dict[metric] = recall_score(y_true, np.where(y_pred > threshold, 1, 0), zero_division=0)
         elif metric.lower() == 'f1':
-            return_dict[metric] = f1_score(y_true, np.where(y_pred > threshold, 1, 0))
+            return_dict[metric] = f1_score(y_true, np.where(y_pred > threshold, 1, 0), zero_division=0)
         elif metric.lower() == 'ks':
             fpr, tpr, thresholds = roc_curve(y_true, y_pred)
             return_dict[metric] = max(tpr - fpr)

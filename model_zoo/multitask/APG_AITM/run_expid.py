@@ -18,6 +18,7 @@ import argparse
 import glob
 import numpy as np
 import pandas as pd
+import polars as pl
 from pathlib import Path
 from sweep_inference import sweep_inference # Import the new module
 
@@ -78,7 +79,34 @@ def run_inference(model, feature_map, params, args):
     for i, f in enumerate(tqdm(files, desc="Inference")):
         logger.setLevel(logging.WARNING)
         try:
-            ddf = feature_encoder.read_data(f, data_format=data_format)
+            # Manual read to handle missing sweep column
+            if data_format == 'parquet':
+                ddf = pl.scan_parquet(f, low_memory=False)
+            else:
+                ddf = pl.scan_csv(f, separator=",", dtypes=feature_encoder.dtype_dict, low_memory=False)
+
+            # Inject dummy sweep column if missing (BEFORE selecting columns)
+            if args.get('sweep', False):
+                sweep_col = params.get('domain_feature')
+                if not sweep_col and params.get('condition_features'):
+                    sweep_col = params['condition_features'][0]
+                if not sweep_col:
+                    sweep_col = 'product' # default
+                
+                # Check if column exists in the file schema
+                if sweep_col not in ddf.collect_schema().names():
+                    ddf = ddf.with_columns(pl.lit("0").alias(sweep_col))
+
+            # Apply column selection as feature_encoder.read_data does
+            use_cols = list(feature_encoder.dtype_dict.keys())
+            if feature_encoder.feature_map.group_id is not None and feature_encoder.feature_map.group_id not in use_cols:
+                use_cols.append(feature_encoder.feature_map.group_id)
+            
+            # Filter use_cols to only those present in the dataframe (e.g. exclude labels in inference)
+            available_cols = ddf.collect_schema().names()
+            use_cols = [c for c in use_cols if c in available_cols]
+            
+            ddf = ddf.select(use_cols)
             
             # Extract IDs before preprocess (which filters columns)
             ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()

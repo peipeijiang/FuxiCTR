@@ -104,8 +104,12 @@ def build_dataset(feature_encoder, train_data=None, valid_data=None, test_data=N
 
             # Split data for train/validation/test
             if valid_size > 0 or test_size > 0:
-                valid_ddf = feature_encoder.read_data(valid_data, **kwargs)
-                test_ddf = feature_encoder.read_data(test_data, **kwargs)
+                # Only read valid/test data if paths are provided
+                if valid_data:
+                    valid_ddf = feature_encoder.read_data(valid_data, **kwargs)
+                if test_data:
+                    test_ddf = feature_encoder.read_data(test_data, **kwargs)
+                
                 # TODO: check split_train_test in lazy mode
                 train_ddf, valid_ddf, test_ddf = split_train_test(train_ddf, valid_ddf, test_ddf, 
                                                                 valid_size, test_size, split_type)

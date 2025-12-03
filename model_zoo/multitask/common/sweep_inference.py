@@ -44,34 +44,76 @@ def sweep_inference(model, feature_map, params, df, sweep_col, feature_encoder=N
         df[sweep_col] = 0 # Initialize with 0 (PAD) or any value, will be overwritten
 
     original_col_data = df[sweep_col].copy()
-    sweep_preds = {} # key: domain_idx, value: preds dict
     
-    for d_idx in valid_indices:
-        # Force set the domain feature
-        df[sweep_col] = d_idx 
+    # Optimization: Process domains in chunks to vectorize operations
+    # Heuristic: We want total rows in a "super-batch" to be reasonable to avoid OOM.
+    # Assuming ~1M rows is safe for typical memory.
+    MAX_ROWS_PER_PASS = 1000000
+    n_rows = len(df)
+    if n_rows == 0: return None
+    
+    domains_per_pass = max(1, MAX_ROWS_PER_PASS // n_rows)
+    logging.info(f"Optimized sweep: Processing {domains_per_pass} domains per pass (Input rows: {n_rows})")
+
+    all_results = []
+    valid_indices_list = list(valid_indices)
+    
+    import numpy as np
+    
+    for i in range(0, len(valid_indices_list), domains_per_pass):
+        chunk_indices = valid_indices_list[i : i + domains_per_pass]
         
-        test_gen = RankDataLoader(feature_map, stage='test', test_data=[df], batch_size=params['batch_size'], 
-                            data_loader=DataFrameDataLoader).make_iterator()
+        # Create a super-batch by replicating the dataframe
+        # We use list comprehension + concat which is generally efficient
+        chunk_dfs = []
+        for d_idx in chunk_indices:
+            # We can optimize this further by not copying the whole DF if we could 
+            # construct the batch tensor directly, but sticking to DataFrame interface for compatibility
+            # Using assign is cleaner but copy() + assignment is robust
+            temp_df = df.copy()
+            temp_df[sweep_col] = d_idx
+            chunk_dfs.append(temp_df)
+        
+        super_batch_df = pd.concat(chunk_dfs, axis=0, ignore_index=True)
+        
+        # Run inference on the super-batch
+        # RankDataLoader will handle batching this super-batch into GPU-sized chunks
+        test_gen = RankDataLoader(feature_map, stage='test', test_data=[super_batch_df], 
+                                batch_size=params['batch_size'], 
+                                data_loader=DataFrameDataLoader).make_iterator()
         
         model._verbose = 0
         preds = model.predict(test_gen)
-        sweep_preds[d_idx] = preds
+        
+        # preds is a dict or array. We need to split it back to assign to domains
+        # But actually, we can just construct the result dataframe directly from preds
+        # because the order is preserved (domain 1 rows, domain 2 rows, ...)
+        
+        if isinstance(preds, dict):
+            batch_res_df = pd.DataFrame(preds)
+        else:
+            batch_res_df = pd.DataFrame(preds, columns=['pred']) # fallback name
+            
+        # Add the sweep column to the result
+        # We need to repeat the domain tokens matching the rows
+        domain_tokens = []
+        for d_idx in chunk_indices:
+            token = id_to_token.get(d_idx, f"domain_{d_idx}")
+            domain_tokens.extend([token] * n_rows)
+            
+        batch_res_df[sweep_col] = domain_tokens
+        all_results.append(batch_res_df)
+        
+        # Explicit GC
+        del super_batch_df, chunk_dfs, test_gen, preds
+        import gc
+        gc.collect()
     
     # Restore original data
     df[sweep_col] = original_col_data
     
-    dfs = []
-    for d_idx in valid_indices:
-        preds = sweep_preds[d_idx]
-        # Convert to DataFrame
-        batch_df = pd.DataFrame(preds)
-        # Add sweep column
-        token = id_to_token.get(d_idx, f"domain_{d_idx}")
-        batch_df[sweep_col] = token
-        dfs.append(batch_df)
-    
-    if not dfs:
+    if not all_results:
         return None
         
-    # Concatenate all products vertically
-    return pd.concat(dfs, axis=0, ignore_index=True)
+    # Concatenate all results vertically
+    return pd.concat(all_results, axis=0, ignore_index=True)

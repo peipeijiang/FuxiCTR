@@ -129,8 +129,8 @@ class FeatureProcessor(object):
                     .cast(self.dtype_dict[name])
                 )
             if (fill_na is not None) and (not col_exist):
-                ddf = ddf.with_columns(pl.col(name).fill_null(fill_na))
-            if col.get("type") == "sequence" and isinstance(ddf.select(name).dtypes[0], pl.List):
+                ddf = ddf.with_columns(pl.lit(fill_na).alias(name))
+            if col_exist and col.get("type") == "sequence" and isinstance(ddf.select(name).dtypes[0], pl.List):
                 # Convert list to "^" seperated string for unified preprocessing of parquet and csv formats
                 ddf = ddf.with_columns(pl.col(name).map_elements(lambda x: "^".join(map(str, x)), return_dtype=pl.String))
         active_cols = [col["name"] for col in all_cols if col.get("active") != False]

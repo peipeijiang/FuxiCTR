@@ -4,7 +4,7 @@ all_seeds_processed:
   train_data: ../../../data/all_seeds
   valid_data: ../../../data/all_seeds
   test_data: ../../../data/all_seeds
-  infer_data: ../../../data/all_seeds
+  infer_data: ../../../data/all_infer
   split_type: random
   train_size: 0.8
   valid_size: 0.1

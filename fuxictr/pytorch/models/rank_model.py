@@ -66,7 +66,7 @@ class BaseModel(nn.Module):
         self.checkpoint = os.path.abspath(os.path.join(self.model_dir, self.model_id + ".model"))
         self.validation_metrics = kwargs["metrics"]
         if SummaryWriter:
-            self.writer = SummaryWriter(log_dir=self.model_dir)
+            self.writer = SummaryWriter(log_dir=os.path.join(self.model_dir, self.model_id))
         else:
             self.writer = None
 
@@ -284,7 +284,13 @@ class BaseModel(nn.Module):
                 val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id)
             else:
                 val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id)
-            logging.info('[Metrics] ' + ' - '.join('{}: {:.6f}'.format(k, v) for k, v in val_logs.items()))
+            
+            # Safe logging with flush
+            log_str = '[Metrics] ' + ' - '.join('{}: {:.6f}'.format(k, v) for k, v in val_logs.items())
+            logging.info(log_str)
+            for handler in logging.root.handlers:
+                handler.flush()
+
             if self.writer:
                 for k, v in val_logs.items():
                     self.writer.add_scalar(f'val_{k}', v, self._total_steps)

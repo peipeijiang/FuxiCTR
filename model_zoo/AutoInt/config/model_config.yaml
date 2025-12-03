@@ -5,7 +5,7 @@ Base:
     early_stop_patience: 2
     pickle_feature_encoder: True
     save_best_only: True
-    eval_steps: 50
+    eval_steps: null
     debug_mode: False
     group_id: null
     use_features: null
@@ -16,7 +16,7 @@ AutoInt_test:
     model: AutoInt
     dataset_id: jrjk_seeds_20251202_processed
     loss: 'binary_crossentropy'
-    metrics: ['logloss', 'AUC']
+    metrics: ['logloss', 'AUC', 'recall', 'precision', 'f1']
     task: binary_classification
     optimizer: adam
     learning_rate: 1.e-3
