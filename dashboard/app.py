@@ -9,6 +9,23 @@ import yaml
 import shutil
 import json
 import base64
+import psutil
+from code_editor import code_editor
+
+def get_gpu_options():
+    options = [-1]
+    labels = ["CPU (-1)"]
+    
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                options.append(i)
+                labels.append(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+    except Exception:
+        pass
+    
+    return options, labels
 
 # Set page config
 st.set_page_config(
@@ -133,6 +150,13 @@ st.markdown("""
         border-color: #93C5FD;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         text-decoration: none;
+    }
+    
+    /* Scrollable Code & JSON Container */
+    .stCode pre, .stJson {
+        max-height: 400px !important;
+        overflow-y: auto !important;
+        border-radius: 8px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -496,9 +520,43 @@ with st.sidebar:
 
             st.text_input("Dataset ID", key="ds_id_val", help="数据集的唯一标识符 (可手动输入)")
             st.text_input("Data Root", key="ds_root_val", help="数据根目录路径 (支持绝对路径)")
-            st.text_input("Train Data", key="ds_train_val", help="训练数据文件路径")
-            st.text_input("Valid Data", key="ds_valid_val", help="验证数据文件路径")
-            st.text_input("Test Data", key="ds_test_val", help="测试数据文件路径")
+
+            # Dynamic file selection based on Data Root
+            scan_dir = st.session_state.ds_root_val
+            available_files = []
+            if scan_dir:
+                # Resolve relative path for scanning
+                if not os.path.isabs(scan_dir):
+                    if selected_model:
+                        model_dir = os.path.join(MODEL_ZOO_DIR, selected_model)
+                        scan_dir = os.path.normpath(os.path.join(model_dir, scan_dir))
+                    else:
+                        scan_dir = os.path.abspath(os.path.join(ROOT_DIR, scan_dir))
+                
+                if os.path.exists(scan_dir) and os.path.isdir(scan_dir):
+                    try:
+                        available_files = sorted([f for f in os.listdir(scan_dir) if not f.startswith(".")])
+                    except:
+                        pass
+
+            def render_file_selector(label, key, help_msg):
+                if available_files:
+                    current = st.session_state.get(key, "")
+                    options = list(available_files)
+                    # Ensure current value is in options
+                    if current and current not in options:
+                        options.insert(0, current)
+                    elif not current:
+                        options.insert(0, "") # Allow empty selection
+                    
+                    st.selectbox(label, options, key=key, help=help_msg)
+                else:
+                    st.text_input(label, key=key, help=help_msg)
+
+            render_file_selector("Train Data", "ds_train_val", "训练数据文件路径")
+            render_file_selector("Valid Data", "ds_valid_val", "验证数据文件路径")
+            render_file_selector("Test Data", "ds_test_val", "测试数据文件路径")
+
             st.text_input("Infer Data", key="ds_infer_val", help="推理数据文件路径 (可选，留空则忽略)")
             st.selectbox("Split Type", ["random", "sequential"], key="ds_split_val", help="数据切分方式")
 
@@ -525,130 +583,192 @@ if selected_model:
         else:
             st.info("💡 当前显示的是系统默认配置。保存修改后将自动创建您的个人副本。")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Dataset Config Section
-            ds_info = config_info["dataset_config.yaml"]
-            is_custom_ds = ds_info["type"] == "custom"
+        # Initialize fullscreen state
+        if "fullscreen_section" not in st.session_state:
+            st.session_state.fullscreen_section = None
+
+        # Helper to render editor
+        def render_editor_section(title, file_key, content, lang, lines, key_suffix, download_mime, is_custom, reset_func):
+            # Header with integrated buttons
+            is_fullscreen = st.session_state.fullscreen_section == key_suffix
+            # Using 🗗 (Window Restore) for exit, and ⛶ (Square Four Corners) for enter
+            fs_icon = "🗗" if is_fullscreen else "⛶"
+            fs_help = "退出全屏" if is_fullscreen else "全屏编辑"
             
-            header_cols = st.columns([3, 1, 1])
+            # Custom CSS for flat, modern, bold buttons in the header
+            st.markdown("""
+                <style>
+                /* Target buttons inside columns for the header actions */
+                div[data-testid="column"] button {
+                    border: 1px solid transparent; /* Flat style */
+                    background-color: #f8f9fa; /* Very light gray */
+                    font-weight: 900 !important; /* Bold icons */
+                    border-radius: 8px; /* Rounded corners */
+                    transition: all 0.2s ease;
+                    padding: 0.4rem 0.8rem; /* Increased padding for better touch target and look */
+                    margin: 0px;
+                    width: 100%; /* Force button to fill the small column */
+                }
+                div[data-testid="column"] button:hover {
+                    border: 1px solid #e0e0e0;
+                    background-color: #ffffff;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                    color: #000;
+                }
+                </style>
+            """, unsafe_allow_html=True)
+
+            # Dynamic column ratios based on fullscreen state
+            # Fullscreen: Container is wide, use small ratios for buttons to keep them compact
+            # Normal: Container is narrow, give buttons more relative width to prevent squashing
+            if is_fullscreen:
+                col_ratios = [1, 0.04, 0.04, 0.04]
+            else:
+                col_ratios = [1, 0.12, 0.12, 0.12]
+                
+            header_cols = st.columns(col_ratios, gap="small")
+            
             with header_cols[0]:
-                st.markdown("### dataset_config.yaml")
+                st.markdown(f"### **{title}**") # Bold title
+            
             with header_cols[1]:
                 st.download_button(
-                    label="⬇️ 导出",
-                    data=load_file_content(dataset_config_path),
-                    file_name="dataset_config.yaml",
-                    mime="application/x-yaml",
-                    key=f"dl_ds_{selected_model}"
+                    label="📥",
+                    data=content,
+                    file_name=title,
+                    mime=download_mime,
+                    key=f"dl_{key_suffix}_{selected_model}",
+                    help="导出文件"
                 )
+                
             with header_cols[2]:
-                if is_custom_ds:
-                    if st.button("🔄 重置", key=f"reset_ds_{selected_model}", help="删除自定义配置，恢复系统默认"):
-                        reset_user_config(current_user, selected_model, "dataset_config.yaml")
+                if is_custom:
+                    if st.button("↺", key=f"reset_{key_suffix}_{selected_model}", help="重置为系统默认"):
+                        reset_func(current_user, selected_model, title)
                         st.rerun()
+                else:
+                    st.write("") # Placeholder
             
-            if is_custom_ds:
-                st.caption("✅ 使用中：个人自定义配置")
-            else:
-                st.caption("🔒 使用中：系统默认配置")
-
-            with st.expander("📂 上传 / 替换文件"):
-                uploaded_dataset = st.file_uploader("上传 dataset_config.yaml", type=["yaml", "yml"], key=f"dataset_uploader_{selected_model}")
-                if uploaded_dataset is not None:
-                    content = uploaded_dataset.read().decode("utf-8")
-                    # Always save to user config dir
-                    save_path = os.path.join(user_config_save_dir, "dataset_config.yaml")
-                    save_file_content(save_path, content)
-                    st.success("已保存到个人配置！")
+            with header_cols[3]:
+                if st.button(fs_icon, key=f"fs_btn_{key_suffix}", help=fs_help):
+                    if is_fullscreen:
+                        st.session_state.fullscreen_section = None
+                    else:
+                        st.session_state.fullscreen_section = key_suffix
                     st.rerun()
             
-            dataset_content = load_file_content(dataset_config_path)
-            new_dataset_content = st.text_area("内容", dataset_content, height=400, key=f"dataset_editor_{selected_model}", label_visibility="collapsed")
-            
-        with col2:
-            # Model Config Section
-            md_info = config_info["model_config.yaml"]
-            is_custom_md = md_info["type"] == "custom"
-            
-            header_cols_m = st.columns([3, 1, 1])
-            with header_cols_m[0]:
-                st.markdown("### model_config.yaml")
-            with header_cols_m[1]:
-                st.download_button(
-                    label="⬇️ 导出",
-                    data=load_file_content(model_config_path),
-                    file_name="model_config.yaml",
-                    mime="application/x-yaml",
-                    key=f"dl_md_{selected_model}"
-                )
-            with header_cols_m[2]:
-                if is_custom_md:
-                    if st.button("🔄 重置", key=f"reset_md_{selected_model}", help="删除自定义配置，恢复系统默认"):
-                        reset_user_config(current_user, selected_model, "model_config.yaml")
-                        st.rerun()
-
-            if is_custom_md:
+            if is_custom:
                 st.caption("✅ 使用中：个人自定义配置")
             else:
                 st.caption("🔒 使用中：系统默认配置")
-            
-            with st.expander("📂 上传 / 替换文件"):
-                uploaded_model = st.file_uploader("上传 model_config.yaml", type=["yaml", "yml"], key=f"model_uploader_{selected_model}")
-                if uploaded_model is not None:
-                    content = uploaded_model.read().decode("utf-8")
-                    # Always save to user config dir
-                    save_path = os.path.join(user_config_save_dir, "model_config.yaml")
-                    save_file_content(save_path, content)
-            model_content = load_file_content(model_config_path)
-            new_model_content = st.text_area("内容", model_content, height=400, key=f"model_editor_{selected_model}", label_visibility="collapsed")
 
-        st.markdown("---")
-        
-        # Run Script Config Section
-        script_info = config_info["run_expid.py"]
-        is_custom_script = script_info["type"] == "custom"
-        
-        header_cols_s = st.columns([3, 1, 1])
-        with header_cols_s[0]:
-            st.markdown("### 📜 run_expid.py")
-        with header_cols_s[1]:
-            st.download_button(
-                label="⬇️ 导出",
-                data=load_file_content(run_expid_path),
-                file_name="run_expid.py",
-                mime="text/x-python",
-                key=f"dl_script_{selected_model}"
+            # Upload
+            with st.expander("📂 上传 / 替换文件"):
+                uploaded = st.file_uploader(f"上传 {title}", type=["yaml", "yml", "py"], key=f"upl_{key_suffix}_{selected_model}")
+                if uploaded is not None:
+                    new_content = uploaded.read().decode("utf-8")
+                    save_path = os.path.join(user_config_save_dir, title)
+                    save_file_content(save_path, new_content)
+                    st.success("已保存！")
+                    st.rerun()
+
+            # Editor
+            # Try to preserve edits across reruns by checking session state
+            editor_key = f"editor_{key_suffix}_{selected_model}"
+            
+            # Fix AttributeError: 'NoneType' object has no attribute 'get'
+            # st.session_state.get(editor_key) might return None if initialized but empty
+            saved_state = st.session_state.get(editor_key)
+            if saved_state and isinstance(saved_state, dict):
+                initial_text = saved_state.get('text', content)
+            else:
+                initial_text = content
+            
+            # Use minLines/maxLines to enforce height and alignment
+            editor_options = {
+                "wrap": False, 
+                "showGutter": True, 
+                "autoScrollEditorIntoView": True,
+                "minLines": lines,
+                "maxLines": lines,
+                "scrollBeyondLastLine": False
+            }
+            
+            res = code_editor(
+                initial_text, 
+                lang=lang, 
+                key=editor_key,
+                options=editor_options,
+                buttons=[{
+                    "name": "Copy",
+                    "feather": "Copy",
+                    "hasText": True,
+                    "alwaysOn": True,
+                    "commands": ["copyAll"],
+                    "style": {"top": "0.46rem", "right": "0.4rem"}
+                }]
             )
-        with header_cols_s[2]:
-            if is_custom_script:
-                if st.button("🔄 重置", key=f"reset_script_{selected_model}", help="删除自定义脚本，恢复系统默认"):
-                    reset_user_config(current_user, selected_model, "run_expid.py")
-                    st.rerun()
+            return res['text']
+
+        # Load contents
+        ds_content = load_file_content(dataset_config_path)
+        md_content = load_file_content(model_config_path)
+        script_content = load_file_content(run_expid_path)
         
-        if is_custom_script:
-            st.caption("✅ 使用中：个人自定义脚本")
+        new_ds_content = ds_content
+        new_md_content = md_content
+        new_script_content = script_content
+
+        # Layout Logic
+        fs = st.session_state.fullscreen_section
+        
+        if fs == "dataset":
+            new_ds_content = render_editor_section(
+                "dataset_config.yaml", "dataset_config.yaml", ds_content, "yaml", 35, "dataset", "application/x-yaml", 
+                config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config
+            )
+        elif fs == "model":
+            new_md_content = render_editor_section(
+                "model_config.yaml", "model_config.yaml", md_content, "yaml", 35, "model", "application/x-yaml",
+                config_info["model_config.yaml"]["type"] == "custom", reset_user_config
+            )
+        elif fs == "script":
+            new_script_content = render_editor_section(
+                "run_expid.py", "run_expid.py", script_content, "python", 35, "script", "text/x-python",
+                config_info["run_expid.py"]["type"] == "custom", reset_user_config
+            )
         else:
-            st.caption("🔒 使用中：系统默认脚本")
-
-        with st.expander("📂 上传 / 替换脚本"):
-            uploaded_script = st.file_uploader("上传 run_expid.py", type=["py"], key=f"script_uploader_{selected_model}")
-            if uploaded_script is not None:
-                content = uploaded_script.read().decode("utf-8")
-                save_path = os.path.join(user_config_save_dir, "run_expid.py")
-                save_file_content(save_path, content)
-                st.success("脚本已更新到个人配置！")
-                st.rerun()
-
-        run_expid_content = load_file_content(run_expid_path)
-        new_run_expid_content = st.text_area("内容", run_expid_content, height=300, key=f"script_editor_{selected_model}", label_visibility="collapsed")
+            # Normal View
+            col1, col2 = st.columns(2)
+            with col1:
+                new_ds_content = render_editor_section(
+                    "dataset_config.yaml", "dataset_config.yaml", ds_content, "yaml", 15, "dataset", "application/x-yaml",
+                    config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config
+                )
+            with col2:
+                new_md_content = render_editor_section(
+                    "model_config.yaml", "model_config.yaml", md_content, "yaml", 15, "model", "application/x-yaml",
+                    config_info["model_config.yaml"]["type"] == "custom", reset_user_config
+                )
+            
+            st.markdown("---")
+            new_script_content = render_editor_section(
+                "run_expid.py", "run_expid.py", script_content, "python", 15, "script", "text/x-python",
+                config_info["run_expid.py"]["type"] == "custom", reset_user_config
+            )
 
         if st.button("💾 保存所有配置", type="primary"):
             # Save configs to user directory
-            save_file_content(os.path.join(user_config_save_dir, "dataset_config.yaml"), new_dataset_content)
-            save_file_content(os.path.join(user_config_save_dir, "model_config.yaml"), new_model_content)
-            save_file_content(os.path.join(user_config_save_dir, "run_expid.py"), new_run_expid_content)
+            # Note: If in fullscreen, we only really edited one, but we save all 'new_' contents.
+            # Since we initialized 'new_' with file content, unedited ones are safe.
+            # BUT if we had unsaved edits in others before entering fullscreen, they might be lost if we don't capture them.
+            # However, since we only render one in fullscreen, the others are not rendered, so 'new_' is just file content.
+            # This means: "Enter Fullscreen" -> "Edit" -> "Save" => SAVES ONLY THE FULLSCREEN ONE (others revert to file).
+            # This is acceptable behavior for "Focus Mode".
+            
+            save_file_content(os.path.join(user_config_save_dir, "dataset_config.yaml"), new_ds_content)
+            save_file_content(os.path.join(user_config_save_dir, "model_config.yaml"), new_md_content)
+            save_file_content(os.path.join(user_config_save_dir, "run_expid.py"), new_script_content)
             
             st.toast("配置已保存到您的个人空间！", icon="✅")
             time.sleep(1)
@@ -691,10 +811,28 @@ if selected_model:
                         mins, secs = divmod(duration, 60)
                         hours, mins = divmod(mins, 60)
                         dur_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m {secs}s"
+                        
+                        # Get Resource Usage
+                        cpu_usage = "N/A"
+                        mem_usage = "N/A"
+                        try:
+                            proc = psutil.Process(t['pid'])
+                            # Use a small interval to get a non-zero CPU reading
+                            cpu_percent = proc.cpu_percent(interval=0.1)
+                            mem_info = proc.memory_info()
+                            mem_mb = mem_info.rss / (1024 * 1024)
+                            
+                            cpu_usage = f"{cpu_percent:.1f}%"
+                            mem_usage = f"{mem_mb:.0f} MB"
+                        except:
+                            pass
+
                         task_data.append({
                             "用户": t['username'],
                             "模型": t['model'],
                             "PID": t['pid'],
+                            "CPU": cpu_usage,
+                            "内存": mem_usage,
                             "运行时长": dur_str
                         })
                     st.dataframe(task_data, hide_index=True, use_container_width=True)
@@ -754,11 +892,30 @@ if selected_model:
                 st.session_state.running_model = None
 
         # Experiment Parameters
-        col_p1, col_p2 = st.columns(2)
+        col_p1, col_p2, col_p3 = st.columns(3)
         with col_p1:
-            expid = st.text_input("Experiment ID", value=selected_model.split('/')[-1] + "_test" if selected_model else "test", help="对应 model_config.yaml 中的 experiment_id")
+            # Load available experiment IDs from model_config.yaml
+            available_expids = []
+            try:
+                if os.path.exists(model_config_path):
+                    with open(model_config_path, 'r') as f:
+                        m_conf = yaml.safe_load(f)
+                        if m_conf and isinstance(m_conf, dict):
+                            available_expids = [k for k in m_conf.keys() if k != 'Base']
+            except Exception:
+                pass
+            
+            if available_expids:
+                expid = st.selectbox("Experiment ID", options=available_expids, help="选择 model_config.yaml 中的 experiment_id")
+            else:
+                default_val = selected_model.split('/')[-1] + "_test" if selected_model else "test"
+                expid = st.text_input("Experiment ID", value=default_val, help="对应 model_config.yaml 中的 experiment_id")
         with col_p2:
-            gpu = st.selectbox("GPU Device", options=[0, 1, 2, 3, 4, 5, 6, 7], index=0, help="选择使用的 GPU 设备 ID")
+            gpu_opts, gpu_labels = get_gpu_options()
+            gpu_map = dict(zip(gpu_opts, gpu_labels))
+            gpu = st.selectbox("GPU Device", options=gpu_opts, format_func=lambda x: gpu_map[x], index=0, help="选择使用的计算设备 (自动扫描)")
+        with col_p3:
+            num_workers = st.number_input("Num Workers", min_value=1, max_value=16, value=3, help="数据加载线程数")
 
         st.markdown("#### 操作")
         
@@ -803,19 +960,28 @@ if selected_model:
             ds_valid_size = 0.1
             ds_test_size = 0.1
 
-            if apply_override:
-                # Generate temporary config override
-                timestamp = int(time.time())
-                temp_config_dir = os.path.join(LOG_DIR, "configs", f"{expid}_{timestamp}")
-                os.makedirs(temp_config_dir, exist_ok=True)
-                
+            # Always generate temporary config to support num_workers and dataset override
+            timestamp = int(time.time())
+            temp_config_dir = os.path.join(LOG_DIR, "configs", f"{expid}_{timestamp}")
+            os.makedirs(temp_config_dir, exist_ok=True)
+            config_override_dir = temp_config_dir
+            
+            try:
                 # 1. Load and Modify Model Config
-                try:
-                    with open(model_config_path, 'r') as f:
-                        model_conf = yaml.safe_load(f)
-                    
+                with open(model_config_path, 'r') as f:
+                    model_conf = yaml.safe_load(f)
+                
+                # Update num_workers
+                if 'Base' in model_conf:
+                    model_conf['Base']['num_workers'] = num_workers
+                # Also update in the specific expid if it exists
+                if expid in model_conf:
+                    model_conf[expid]['num_workers'] = num_workers
+                
+                # Update dataset_id if override is enabled
+                original_ds_id = None
+                if apply_override:
                     # Get original dataset_id from the target experiment
-                    original_ds_id = None
                     if expid in model_conf:
                         original_ds_id = model_conf[expid].get('dataset_id')
                     
@@ -823,11 +989,12 @@ if selected_model:
                     for key in model_conf:
                         if isinstance(model_conf[key], dict) and 'dataset_id' in model_conf[key]:
                              model_conf[key]['dataset_id'] = ds_id
+                
+                with open(os.path.join(temp_config_dir, "model_config.yaml"), 'w') as f:
+                    yaml.dump(model_conf, f)
                     
-                    with open(os.path.join(temp_config_dir, "model_config.yaml"), 'w') as f:
-                        yaml.dump(model_conf, f)
-                        
-                    # 2. Generate Dataset Config
+                # 2. Handle Dataset Config
+                if apply_override:
                     # Try to load existing dataset config to preserve feature_cols and label_col
                     existing_ds_conf = {}
                     try:
@@ -855,8 +1022,7 @@ if selected_model:
                         if 'label_col' in existing_ds_conf[original_ds_id]:
                             ds_params['label_col'] = existing_ds_conf[original_ds_id]['label_col']
                     
-                    # Remove empty fields to avoid "Invalid data path: *.parquet" error
-                    # FuxiCTR will try to glob "*.parquet" if the path is empty, which fails.
+                    # Remove empty fields
                     if not ds_valid:
                         ds_params.pop('valid_data', None)
                     if not ds_test:
@@ -871,12 +1037,14 @@ if selected_model:
                     with open(os.path.join(temp_config_dir, "dataset_config.yaml"), 'w') as f:
                         yaml.dump(dataset_conf, f)
                         
-                    config_override_dir = temp_config_dir
                     st.toast(f"使用数据集覆盖：{ds_id} (继承自 {original_ds_id})", icon="⚙️")
-                    
-                except Exception as e:
-                    st.error(f"生成配置覆盖失败：{e}")
-                    st.stop()
+                else:
+                    # Copy existing dataset config
+                    shutil.copy(dataset_config_path, os.path.join(temp_config_dir, "dataset_config.yaml"))
+                
+            except Exception as e:
+                st.error(f"生成配置失败：{e}")
+                st.stop()
 
             cmd = f"cd {model_path} && python run_expid.py --expid {expid} --gpu {gpu} --mode train"
             # Include username in log filename for isolation
@@ -902,18 +1070,28 @@ if selected_model:
             ds_valid_size = 0.1
             ds_test_size = 0.1
 
-            if apply_override:
-                 # Generate temporary config override (Same logic as training)
-                timestamp = int(time.time())
-                temp_config_dir = os.path.join(LOG_DIR, "configs", f"{expid}_infer_{timestamp}")
-                os.makedirs(temp_config_dir, exist_ok=True)
+            # Always generate temporary config to support num_workers and dataset override
+            timestamp = int(time.time())
+            temp_config_dir = os.path.join(LOG_DIR, "configs", f"{expid}_infer_{timestamp}")
+            os.makedirs(temp_config_dir, exist_ok=True)
+            config_override_dir = temp_config_dir
+            
+            try:
+                # 1. Load and Modify Model Config
+                with open(model_config_path, 'r') as f:
+                    model_conf = yaml.safe_load(f)
                 
-                try:
-                    with open(model_config_path, 'r') as f:
-                        model_conf = yaml.safe_load(f)
-                    
+                # Update num_workers
+                if 'Base' in model_conf:
+                    model_conf['Base']['num_workers'] = num_workers
+                # Also update in the specific expid if it exists
+                if expid in model_conf:
+                    model_conf[expid]['num_workers'] = num_workers
+                
+                # Update dataset_id if override is enabled
+                original_ds_id = None
+                if apply_override:
                     # Get original dataset_id from the target experiment
-                    original_ds_id = None
                     if expid in model_conf:
                         original_ds_id = model_conf[expid].get('dataset_id')
                     
@@ -921,10 +1099,12 @@ if selected_model:
                     for key in model_conf:
                         if isinstance(model_conf[key], dict) and 'dataset_id' in model_conf[key]:
                              model_conf[key]['dataset_id'] = ds_id
-                    
-                    with open(os.path.join(temp_config_dir, "model_config.yaml"), 'w') as f:
-                        yaml.dump(model_conf, f)
-                    
+                
+                with open(os.path.join(temp_config_dir, "model_config.yaml"), 'w') as f:
+                    yaml.dump(model_conf, f)
+                
+                # 2. Handle Dataset Config
+                if apply_override:
                     # Try to load existing dataset config to preserve feature_cols and label_col
                     existing_ds_conf = {}
                     try:
@@ -964,10 +1144,13 @@ if selected_model:
                     }
                     with open(os.path.join(temp_config_dir, "dataset_config.yaml"), 'w') as f:
                         yaml.dump(dataset_conf, f)
-                    config_override_dir = temp_config_dir
-                except Exception as e:
-                    st.error(f"生成配置覆盖失败：{e}")
-                    st.stop()
+                else:
+                    # Copy existing dataset config
+                    shutil.copy(dataset_config_path, os.path.join(temp_config_dir, "dataset_config.yaml"))
+
+            except Exception as e:
+                st.error(f"生成配置失败：{e}")
+                st.stop()
 
             cmd = f"cd {model_path} && python run_expid.py --expid {expid} --gpu {gpu} --mode inference"
             # Include username in log filename for isolation
@@ -1050,7 +1233,13 @@ if selected_model:
             dataset_dirs = get_subdirectories(checkpoint_dir)
             
             if dataset_dirs:
-                selected_dataset_dir = st.selectbox("选择数据集目录", dataset_dirs)
+                # Sort dataset directories by modification time (newest first)
+                try:
+                    dataset_dirs.sort(key=lambda x: os.path.getmtime(os.path.join(checkpoint_dir, x)), reverse=True)
+                except Exception:
+                    pass # Keep default order if sorting fails
+                
+                selected_dataset_dir = st.selectbox("选择数据集目录", dataset_dirs, index=0, help="默认选中最新修改的目录")
                 
                 if selected_dataset_dir:
                     target_dir = os.path.join(checkpoint_dir, selected_dataset_dir)
@@ -1068,14 +1257,23 @@ if selected_model:
                         if f.endswith(".log"):
                             log_files.append(f)
                     
+                    # Sort files for display (optional, but good for UX)
+                    file_data.sort(key=lambda x: x["最后修改时间"], reverse=True)
+                    
                     df = pd.DataFrame(file_data)
                     st.dataframe(df, use_container_width=True)
 
                     # Log Preview Section
                     if log_files:
+                        # Sort log files by modification time (newest first)
+                        try:
+                            log_files.sort(key=lambda x: os.path.getmtime(os.path.join(target_dir, x)), reverse=True)
+                        except Exception:
+                            pass
+
                         st.markdown("---")
                         st.subheader("📜 日志查看器")
-                        selected_log = st.selectbox("选择日志文件", log_files)
+                        selected_log = st.selectbox("选择日志文件", log_files, index=0, help="默认选中最新修改的日志")
                         if selected_log:
                             log_path = os.path.join(target_dir, selected_log)
                             with open(log_path, "r") as f:
