@@ -35,6 +35,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+USER_OPTIONS = [
+    "yeshao",
+    "chenzeng2", "cywang50", "gjwang5", "gxwang9",
+    "hkhu3", "junzhang56", "mxsong", "qiancao6",
+    "taozhang48", "wenzhang33", "yangzhou23", "ymbo2"
+]
+
 # Initialize Session State
 if "run_pid" not in st.session_state:
     st.session_state.run_pid = None
@@ -167,9 +174,11 @@ MODEL_ZOO_DIR = os.path.join(ROOT_DIR, "model_zoo")
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 LOG_DIR = os.path.join(ROOT_DIR, "dashboard", "logs")
 TASK_STATE_DIR = os.path.join(ROOT_DIR, "dashboard", "state", "tasks")
+HISTORY_DIR = os.path.join(ROOT_DIR, "dashboard", "state", "history")
 USER_CONFIG_DIR = os.path.join(ROOT_DIR, "dashboard", "user_configs")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(TASK_STATE_DIR, exist_ok=True)
+os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(USER_CONFIG_DIR, exist_ok=True)
 
 # --- Task Management Helpers ---
@@ -232,6 +241,69 @@ def remove_task_state(pid):
                 os.remove(os.path.join(TASK_STATE_DIR, f))
             except:
                 pass
+
+# --- Run History Helpers ---
+def _history_path(username):
+    return os.path.join(HISTORY_DIR, f"{username}.json")
+
+def load_history(username):
+    path = _history_path(username)
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_history(username, records):
+    path = _history_path(username)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+def append_history_record(username, record):
+    history = load_history(username)
+    history.insert(0, record)
+    # Keep only the most recent 100 entries to avoid unbounded growth
+    history = history[:100]
+    save_history(username, history)
+
+def update_history_record(username, pid, status, exit_code=None, message=None):
+    history = load_history(username)
+    updated = False
+    current_time = time.time()
+    for item in history:
+        if item.get('pid') == pid and item.get('status') == 'running':
+            item['end_time'] = current_time
+            item['duration'] = current_time - item.get('start_time', current_time)
+            item['status'] = status
+            item['exit_code'] = exit_code
+            if message:
+                item['message'] = message
+            if exit_code is not None:
+                item['success'] = (exit_code == 0)
+            elif status == 'stopped':
+                item['success'] = False
+            elif status == 'success':
+                item['success'] = True
+            elif status == 'failed':
+                item['success'] = False
+            updated = True
+            break
+    if updated:
+        save_history(username, history)
+
+def format_duration(seconds):
+    if seconds is None:
+        return "-"
+    seconds = int(seconds)
+    mins, secs = divmod(seconds, 60)
+    hours, mins = divmod(mins, 60)
+    if hours:
+        return f"{hours}h {mins}m"
+    if mins:
+        return f"{mins}m {secs}s"
+    return f"{secs}s"
 
 def get_subdirectories(directory):
     if not os.path.exists(directory):
@@ -442,20 +514,12 @@ with st.sidebar:
     if "prev_user" not in st.session_state:
         st.session_state.prev_user = "admin"
 
-    # Define user list from provided images
-    user_options = [
-        "yeshao",
-        "chenzeng2", "cywang50", "gjwang5", "gxwang9", 
-        "hkhu3", "junzhang56", "mxsong", "qiancao6", 
-        "taozhang48", "wenzhang33", "yangzhou23", "ymbo2"
-    ]
-    
     # Ensure prev_user is in options
     default_index = 0
-    if st.session_state.prev_user in user_options:
-        default_index = user_options.index(st.session_state.prev_user)
+    if st.session_state.prev_user in USER_OPTIONS:
+        default_index = USER_OPTIONS.index(st.session_state.prev_user)
 
-    current_user = st.selectbox("用户名", user_options, index=default_index, help="用于任务限制（每位用户最多 1 个任务）。")
+    current_user = st.selectbox("用户名", USER_OPTIONS, index=default_index, help="用于任务限制（每位用户最多 1 个任务）。")
     
     # Detect User Switch
     if current_user != st.session_state.prev_user:
@@ -571,7 +635,7 @@ if selected_model:
     run_expid_path = config_info["run_expid.py"]["path"]
     
     # Tabs with Icons
-    tab1, tab2, tab3, tab4 = st.tabs(["🛠️ 配置管理", "▶️ 任务执行", "📊 模型权重", "📈 可视化"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ 配置管理", "▶️ 任务执行", "📊 模型权重", "📈 可视化", "🗂️ 历史记录"])
 
     with tab1:
         st.markdown("### 📝 配置编辑器")
@@ -839,7 +903,7 @@ if selected_model:
                 else:
                     st.info("暂无活跃任务")
                             
-        def start_process(command, log_filename, model_name, config_override_path=None):
+        def start_process(command, log_filename, model_name, config_override_path=None, meta=None):
             log_path = os.path.join(LOG_DIR, log_filename)
             f = open(log_path, "w")
             
@@ -875,6 +939,23 @@ if selected_model:
             # Register Task Globally
             save_task_state(current_user, p.pid, model_name, log_path)
             
+            # Append history record
+            meta = meta or {}
+            append_history_record(current_user, {
+                "pid": p.pid,
+                "model": model_name,
+                "expid": meta.get("expid"),
+                "mode": meta.get("mode", "train"),
+                "gpu": meta.get("gpu"),
+                "num_workers": meta.get("num_workers"),
+                "start_time": time.time(),
+                "end_time": None,
+                "duration": None,
+                "status": "running",
+                "success": None,
+                "logfile": log_path
+            })
+            
         def stop_process():
             if st.session_state.run_pid:
                 try:
@@ -884,6 +965,8 @@ if selected_model:
                     os.killpg(st.session_state.run_pid, signal.SIGKILL)
                 except Exception:
                     pass
+                
+                update_history_record(current_user, st.session_state.run_pid, "stopped")
                 
                 # Unregister Task Globally
                 remove_task_state(st.session_state.run_pid)
@@ -1048,7 +1131,18 @@ if selected_model:
 
             cmd = f"cd {model_path} && python run_expid.py --expid {expid} --gpu {gpu} --mode train"
             # Include username in log filename for isolation
-            start_process(cmd, f"{expid}_{current_user}_train.log", selected_model, config_override_dir)
+            start_process(
+                cmd,
+                f"{expid}_{current_user}_train.log",
+                selected_model,
+                config_override_dir,
+                meta={
+                    "expid": expid,
+                    "mode": "train",
+                    "gpu": gpu,
+                    "num_workers": num_workers
+                }
+            )
             st.rerun()
 
         if col_infer.button("🔮 开始推理", disabled=not can_start):
@@ -1154,7 +1248,18 @@ if selected_model:
 
             cmd = f"cd {model_path} && python run_expid.py --expid {expid} --gpu {gpu} --mode inference"
             # Include username in log filename for isolation
-            start_process(cmd, f"{expid}_{current_user}_inference.log", selected_model, config_override_dir)
+            start_process(
+                cmd,
+                f"{expid}_{current_user}_inference.log",
+                selected_model,
+                config_override_dir,
+                meta={
+                    "expid": expid,
+                    "mode": "inference",
+                    "gpu": gpu,
+                    "num_workers": num_workers
+                }
+            )
             st.rerun()
             
         if col_stop.button("🛑 停止进程", type="secondary", disabled=st.session_state.run_pid is None):
@@ -1165,27 +1270,31 @@ if selected_model:
         st.markdown("---")
         
         is_running = False
+        finished_exit_code = None
+        finished_pid = None
         if st.session_state.run_pid:
             try:
                 # Try to wait for the process to check if it's a zombie (finished but not reaped)
-                # os.WNOHANG ensures we don't block if it's still running
                 pid, status = os.waitpid(st.session_state.run_pid, os.WNOHANG)
                 if pid == 0:
-                    # Process is still running
                     is_running = True
                 else:
-                    # Process exited and was reaped
+                    finished_pid = pid
+                    if os.WIFEXITED(status):
+                        finished_exit_code = os.WEXITSTATUS(status)
+                    elif os.WIFSIGNALED(status):
+                        finished_exit_code = -os.WTERMSIG(status)
                     is_running = False
             except ChildProcessError:
-                # Not a child of this process (e.g. restored from session state after restart)
-                # Fallback to os.kill check
                 try:
                     os.kill(st.session_state.run_pid, 0)
                     is_running = True
                 except OSError:
                     is_running = False
+                    finished_pid = st.session_state.run_pid
             except OSError:
                 is_running = False
+                finished_pid = st.session_state.run_pid
 
             if is_running:
                 if st.session_state.running_model == selected_model:
@@ -1194,10 +1303,16 @@ if selected_model:
                     st.info(f"后台运行中：**{st.session_state.running_model}**")
             else:
                 # Cleanup if process finished
+                if finished_exit_code is None:
+                    status_label = "finished"
+                else:
+                    status_label = "success" if finished_exit_code == 0 else "failed"
+                update_history_record(current_user, st.session_state.run_pid, status_label, exit_code=finished_exit_code)
                 remove_task_state(st.session_state.run_pid)
                 st.session_state.run_pid = None
                 st.session_state.running_model = None
-                st.info("✅ **已完成**")
+                message = "✅ **已完成**" if finished_exit_code == 0 else "⚠️ **已结束 (检查日志)**"
+                st.info(message)
                 st.rerun()
         else:
             st.info("⚪ **空闲**")
@@ -1340,3 +1455,36 @@ if selected_model:
             """)
         else:
             st.warning("⚠️ 未找到 checkpoints 目录。请先运行训练任务。")
+
+    with tab5:
+        st.header("🗂️ 历史运行记录")
+        st.caption("此处仅展示当前左侧所选用户的运行记录，切换侧边栏用户名即可查看自己的历史。")
+
+        target_user = current_user
+        user_history = load_history(target_user)
+        if user_history:
+            detail_rows = []
+            now_ts = time.time()
+            for rec in user_history[:100]:
+                start_ts = rec.get('start_time')
+                start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_ts)) if start_ts else "-"
+                duration_val = rec.get('duration')
+                if rec.get('status') == 'running' and start_ts:
+                    duration_val = now_ts - start_ts
+                gpu_val = rec.get('gpu')
+                gpu_display = 'CPU' if gpu_val in (None, -1) else str(gpu_val)
+                success_flag = rec.get('success')
+                success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
+                detail_rows.append({
+                    "开始时间": start_str,
+                    "模型": rec.get('model', '-') or '-',
+                    "实验": rec.get('expid', '-') or '-',
+                    "模式": rec.get('mode', '-') or '-',
+                    "GPU": gpu_display,
+                    "时长": format_duration(duration_val),
+                    "状态": rec.get('status', '-') or '-',
+                    "成功": success_display
+                })
+            st.dataframe(detail_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info(f"用户 {target_user} 暂无历史记录")
