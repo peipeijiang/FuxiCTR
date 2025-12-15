@@ -19,6 +19,7 @@
 import torch.nn as nn
 import numpy as np
 import torch
+import torch.distributed as dist
 import os, sys
 import logging
 try:
@@ -50,6 +51,10 @@ class BaseModel(nn.Module):
                  **kwargs):
         super(BaseModel, self).__init__()
         self.device = get_device(gpu)
+        self._distributed = bool(kwargs.get("distributed", False) and dist.is_available() and dist.is_initialized())
+        self._distributed_rank = kwargs.get("distributed_rank", 0)
+        self._distributed_world_size = max(1, kwargs.get("distributed_world_size", 1))
+        self._is_master = (not self._distributed) or self._distributed_rank == 0
         self._monitor = Monitor(kv=monitor)
         self._monitor_mode = monitor_mode
         self._early_stop_patience = early_stop_patience
@@ -65,7 +70,7 @@ class BaseModel(nn.Module):
         self.model_dir = os.path.join(kwargs["model_root"], feature_map.dataset_id)
         self.checkpoint = os.path.abspath(os.path.join(self.model_dir, self.model_id + ".model"))
         self.validation_metrics = kwargs["metrics"]
-        if SummaryWriter:
+        if SummaryWriter and self._is_master:
             self.writer = SummaryWriter(log_dir=os.path.join(self.model_dir, self.model_id))
         else:
             self.writer = None
@@ -162,45 +167,50 @@ class BaseModel(nn.Module):
         if self._eval_steps is None:
             self._eval_steps = self._steps_per_epoch
         
-        logging.info("Start training: {} batches/epoch".format(self._steps_per_epoch))
-        logging.info("************ Epoch=1 start ************")
+        self._log("Start training: {} batches/epoch".format(self._steps_per_epoch))
+        self._log("************ Epoch=1 start ************")
         for epoch in range(epochs):
             self._epoch_index = epoch
             self.train_epoch(data_generator)
             if self._stop_training:
                 break
             else:
-                logging.info("************ Epoch={} end ************".format(self._epoch_index + 1))
-        logging.info("Training finished.")
-        logging.info("Load best model: {}".format(self.checkpoint))
+                self._log("************ Epoch={} end ************".format(self._epoch_index + 1))
+        self._log("Training finished.")
+        self._distributed_barrier()
+        self._log("Load best model: {}".format(self.checkpoint))
         self.load_weights(self.checkpoint)
+        self._distributed_barrier()
 
     def checkpoint_and_earlystop(self, logs, min_delta=1e-6):
         monitor_value = self._monitor.get_value(logs)
         if (self._monitor_mode == "min" and monitor_value > self._best_metric - min_delta) or \
            (self._monitor_mode == "max" and monitor_value < self._best_metric + min_delta):
             self._stopping_steps += 1
-            logging.info("Monitor({})={:.6f} STOP!".format(self._monitor_mode, monitor_value))
+            self._log("Monitor({})={:.6f} STOP!".format(self._monitor_mode, monitor_value))
             if self._reduce_lr_on_plateau:
                 current_lr = self.lr_decay()
-                logging.info("Reduce learning rate on plateau: {:.6f}".format(current_lr))
+                self._log("Reduce learning rate on plateau: {:.6f}".format(current_lr))
         else:
             self._stopping_steps = 0
             self._best_metric = monitor_value
             if self._save_best_only:
-                logging.info("Save best model: monitor({})={:.6f}"\
+                self._log("Save best model: monitor({})={:.6f}"\
                              .format(self._monitor_mode, monitor_value))
                 self.save_weights(self.checkpoint)
         if self._stopping_steps >= self._early_stop_patience:
             self._stop_training = True
-            logging.info("********* Epoch={} early stop *********".format(self._epoch_index + 1))
+            self._log("********* Epoch={} early stop *********".format(self._epoch_index + 1))
         if not self._save_best_only:
             self.save_weights(self.checkpoint)
+        if self._distributed:
+            self._distributed_barrier()
 
     def eval_step(self):
-        logging.info('Evaluation @epoch {} - batch {}: '.format(self._epoch_index + 1, self._batch_index + 1))
+        self._log('Evaluation @epoch {} - batch {}: '.format(self._epoch_index + 1, self._batch_index + 1))
         val_logs = self.evaluate(self.valid_gen, metrics=self._monitor.get_metrics())
         self.checkpoint_and_earlystop(val_logs)
+        self._sync_training_state()
         self.train()
 
     def train_step(self, batch_data):
@@ -214,6 +224,7 @@ class BaseModel(nn.Module):
         loss = main_loss + reg_loss
         
         loss.backward()
+        self._sync_gradients()
         grad_norm = nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
         self.optimizer.step()
         return loss, main_loss, reg_loss, grad_norm
@@ -226,7 +237,7 @@ class BaseModel(nn.Module):
         train_grad_norm = 0
         
         self.train()
-        if self._verbose == 0:
+        if self._verbose == 0 or not self._is_master:
             batch_iterator = data_generator
         else:
             batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout)
@@ -246,7 +257,7 @@ class BaseModel(nn.Module):
                 avg_reg_loss = train_reg_loss / self._eval_steps
                 avg_grad_norm = train_grad_norm / self._eval_steps
                 
-                logging.info("Train loss: {:.6f}".format(avg_loss))
+                self._log("Train loss: {:.6f}".format(avg_loss))
                 if self.writer:
                     self.writer.add_scalar('train/loss', avg_loss, self._total_steps)
                     self.writer.add_scalar('train/main_loss', avg_main_loss, self._total_steps)
@@ -269,7 +280,7 @@ class BaseModel(nn.Module):
             y_pred = []
             y_true = []
             group_id = []
-            if self._verbose > 0:
+            if self._verbose > 0 and self._is_master:
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
@@ -280,38 +291,45 @@ class BaseModel(nn.Module):
             y_pred = np.array(y_pred, np.float64)
             y_true = np.array(y_true, np.float64)
             group_id = np.array(group_id) if len(group_id) > 0 else None
-            if metrics is not None:
-                val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id)
+            y_pred = self._gather_numpy(y_pred)
+            y_true = self._gather_numpy(y_true)
+            group_id = self._gather_numpy(group_id) if group_id is not None else None
+            if self._is_master:
+                if metrics is not None:
+                    val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id)
+                else:
+                    val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id)
+                log_str = '[Metrics] ' + ' - '.join('{}: {:.6f}'.format(k, v) for k, v in val_logs.items())
+                self._log(log_str)
+                for handler in logging.root.handlers:
+                    handler.flush()
+                if self.writer:
+                    for k, v in val_logs.items():
+                        self.writer.add_scalar(f'val_{k}', v, self._total_steps)
             else:
-                val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id)
-            
-            # Safe logging with flush
-            log_str = '[Metrics] ' + ' - '.join('{}: {:.6f}'.format(k, v) for k, v in val_logs.items())
-            logging.info(log_str)
-            for handler in logging.root.handlers:
-                handler.flush()
-
-            if self.writer:
-                for k, v in val_logs.items():
-                    self.writer.add_scalar(f'val_{k}', v, self._total_steps)
+                val_logs = {}
+            val_logs = self._broadcast_logs(val_logs)
             return val_logs
 
     def predict(self, data_generator):
         self.eval()  # set to evaluation mode
         with torch.no_grad():
             y_pred = []
-            if self._verbose > 0:
+            if self._verbose > 0 and self._is_master:
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
                 y_pred.extend(return_dict["y_pred"].data.cpu().numpy().reshape(-1))
             y_pred = np.array(y_pred, np.float64)
+            y_pred = self._gather_numpy(y_pred)
             return y_pred
 
     def evaluate_metrics(self, y_true, y_pred, metrics, group_id=None, threshold=0.5):
         return evaluate_metrics(y_true, y_pred, metrics, group_id, threshold)
 
     def save_weights(self, checkpoint):
+        if self._distributed and not self._is_master:
+            return
         torch.save(self.state_dict(), checkpoint)
     
     def load_weights(self, checkpoint):
@@ -334,5 +352,78 @@ class BaseModel(nn.Module):
                 continue
             if param.requires_grad:
                 total_params += param.numel()
-        logging.info("Total number of parameters: {}.".format(total_params))
+        self._log("Total number of parameters: {}.".format(total_params))
+
+    def _log(self, message):
+        if self._is_master:
+            logging.info(message)
+
+    def _distributed_barrier(self):
+        if self._distributed and dist.is_initialized():
+            dist.barrier()
+
+    def _broadcast_object(self, obj):
+        if not self._distributed or not dist.is_initialized():
+            return obj
+        object_list = [obj] if self._is_master else [None]
+        dist.broadcast_object_list(object_list, src=0)
+        return object_list[0]
+
+    def _broadcast_logs(self, logs):
+        if not isinstance(logs, dict):
+            return logs
+        return self._broadcast_object(logs)
+
+    def _sync_training_state(self):
+        if not self._distributed or not dist.is_initialized():
+            return
+        state = {
+            "stop": self._stop_training,
+            "best_metric": self._best_metric,
+            "stopping_steps": self._stopping_steps
+        }
+        synced_state = self._broadcast_object(state)
+        if not self._is_master:
+            self._stop_training = synced_state["stop"]
+            self._best_metric = synced_state["best_metric"]
+            self._stopping_steps = synced_state["stopping_steps"]
+
+    def _sync_gradients(self):
+        if not self._distributed or not dist.is_initialized():
+            return
+        for param in self.parameters():
+            if param.grad is None:
+                continue
+            dist.all_reduce(param.grad, op=dist.ReduceOp.SUM)
+            param.grad.div_(self._distributed_world_size)
+
+    def _gather_tensor(self, tensor):
+        if (not self._distributed) or (not dist.is_initialized()):
+            return tensor
+        if tensor is None:
+            return None
+        local_length = torch.tensor([tensor.shape[0]], device=self.device, dtype=torch.long)
+        length_list = [torch.zeros_like(local_length) for _ in range(self._distributed_world_size)]
+        dist.all_gather(length_list, local_length)
+        max_len = int(torch.max(torch.stack(length_list)).item())
+        pad_shape = (max_len,) + tuple(tensor.shape[1:])
+        padded = torch.zeros(pad_shape, dtype=tensor.dtype, device=self.device)
+        if tensor.shape[0] > 0:
+            padded[:tensor.shape[0]] = tensor
+        gather_list = [torch.zeros_like(padded) for _ in range(self._distributed_world_size)]
+        dist.all_gather(gather_list, padded)
+        lengths = [int(l.item()) for l in length_list]
+        trimmed = [g[:l] for g, l in zip(gather_list, lengths) if l > 0]
+        if len(trimmed) == 0:
+            return torch.zeros((0,) + tuple(tensor.shape[1:]), dtype=tensor.dtype, device=self.device)
+        return torch.cat(trimmed, dim=0)
+
+    def _gather_numpy(self, array):
+        if array is None:
+            return None
+        if (not self._distributed) or (not dist.is_initialized()):
+            return array
+        tensor = torch.from_numpy(array).to(self.device)
+        gathered = self._gather_tensor(tensor)
+        return gathered.data.cpu().numpy()
 

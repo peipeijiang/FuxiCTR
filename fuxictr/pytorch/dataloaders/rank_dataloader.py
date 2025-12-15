@@ -20,15 +20,51 @@ from .npz_dataloader import NpzDataLoader
 from .parquet_block_dataloader import ParquetBlockDataLoader
 from .parquet_dataloader import ParquetDataLoader
 import logging
+import math
+
+
+class _DistributedDataLoaderWrapper:
+    def __init__(self, dataloader, rank, world_size):
+        self.dataloader = dataloader
+        self.rank = rank % max(world_size, 1)
+        self.world_size = max(world_size, 1)
+        self._mirror_attributes()
+
+    def _mirror_attributes(self):
+        for attr in ["num_samples", "num_blocks", "num_batches", "batch_size"]:
+            if hasattr(self.dataloader, attr):
+                value = getattr(self.dataloader, attr)
+                if isinstance(value, int) and value > 0 and attr != "batch_size":
+                    setattr(self, attr, max(1, math.ceil(value / self.world_size)))
+                else:
+                    setattr(self, attr, value)
+
+    def __iter__(self):
+        for idx, batch in enumerate(self.dataloader):
+            if idx % self.world_size == self.rank:
+                yield batch
+
+    def __len__(self):
+        if hasattr(self.dataloader, "__len__"):
+            base_len = len(self.dataloader)
+            return max(1, math.ceil(base_len / self.world_size)) if base_len else 0
+        return 0
+
+    def __getattr__(self, item):
+        return getattr(self.dataloader, item)
 
 
 class RankDataLoader(object):
     def __init__(self, feature_map, stage="both", train_data=None, valid_data=None, test_data=None,
                  batch_size=32, shuffle=True, streaming=False, data_format="npz", **kwargs):
-        logging.info("Loading datasets...")
+        if self._distributed_rank == 0:
+            logging.info("Loading datasets...")
         train_gen = None
         valid_gen = None
         test_gen = None
+        self._distributed_rank = kwargs.pop("distributed_rank", 0)
+        self._distributed_world_size = kwargs.pop("distributed_world_size", 1)
+        self._distributed = self._distributed_world_size > 1
         if kwargs.get("data_loader"):
             DataLoader = kwargs["data_loader"]
         else:
@@ -40,35 +76,48 @@ class RankDataLoader(object):
         if stage in ["both", "train"]:
             train_gen = DataLoader(feature_map, train_data, split="train", batch_size=batch_size,
                                    shuffle=shuffle, **kwargs)
-            logging.info(
-                "Train samples: total/{:d}, blocks/{:d}"
-                .format(train_gen.num_samples, train_gen.num_blocks)
-            )     
+            if self._distributed_rank == 0:
+                logging.info(
+                    "Train samples: total/{:d}, blocks/{:d}"
+                    .format(train_gen.num_samples, train_gen.num_blocks)
+                )     
             if valid_data:
                 valid_gen = DataLoader(feature_map, valid_data, split="valid",
                                        batch_size=batch_size, shuffle=False, **kwargs)
-                logging.info(
-                    "Validation samples: total/{:d}, blocks/{:d}"
-                    .format(valid_gen.num_samples, valid_gen.num_blocks)
-                )
+                if self._distributed_rank == 0:
+                    logging.info(
+                        "Validation samples: total/{:d}, blocks/{:d}"
+                        .format(valid_gen.num_samples, valid_gen.num_blocks)
+                    )
 
         if stage in ["both", "test"]:
             if test_data:
                 test_gen = DataLoader(feature_map, test_data, split="test", batch_size=batch_size,
                                       shuffle=False, **kwargs)
-                logging.info(
-                    "Test samples: total/{:d}, blocks/{:d}"
-                    .format(test_gen.num_samples, test_gen.num_blocks)
-                )
-        self.train_gen, self.valid_gen, self.test_gen = train_gen, valid_gen, test_gen
+                if self._distributed_rank == 0:
+                    logging.info(
+                        "Test samples: total/{:d}, blocks/{:d}"
+                        .format(test_gen.num_samples, test_gen.num_blocks)
+                    )
+        self.train_gen = self._wrap_distributed(train_gen)
+        self.valid_gen = self._wrap_distributed(valid_gen)
+        self.test_gen = self._wrap_distributed(test_gen)
 
     def make_iterator(self):
         if self.stage == "train":
-            logging.info("Loading train and validation data done.")
+            if self._distributed_rank == 0:
+                logging.info("Loading train and validation data done.")
             return self.train_gen, self.valid_gen
         elif self.stage == "test":
-            logging.info("Loading test data done.")
+            if self._distributed_rank == 0:
+                logging.info("Loading test data done.")
             return self.test_gen
         else:
-            logging.info("Loading data done.")
+            if self._distributed_rank == 0:
+                logging.info("Loading data done.")
             return self.train_gen, self.valid_gen, self.test_gen
+
+    def _wrap_distributed(self, generator):
+        if not self._distributed or generator is None:
+            return generator
+        return _DistributedDataLoaderWrapper(generator, self._distributed_rank, self._distributed_world_size)

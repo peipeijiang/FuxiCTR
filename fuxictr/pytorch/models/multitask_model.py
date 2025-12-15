@@ -140,7 +140,7 @@ class MultiTaskModel(BaseModel):
             y_true_all = defaultdict(list)
             labels = self.feature_map.labels
             group_id = []
-            if self._verbose > 0:
+            if self._verbose > 0 and self._is_master:
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
@@ -151,13 +151,16 @@ class MultiTaskModel(BaseModel):
                     y_true_all[labels[i]].extend(batch_y_true[i].data.cpu().numpy().reshape(-1))
                 if self.feature_map.group_id is not None:
                     group_id.extend(self.get_group_id(batch_data).numpy().reshape(-1))
+            group_id = np.array(group_id) if len(group_id) > 0 else None
+            group_id = self._gather_numpy(group_id) if group_id is not None else None
             all_val_logs = {}
             mean_val_logs = defaultdict(list)
-            group_id = np.array(group_id) if len(group_id) > 0 else None
 
             for i in range(len(labels)):
                 y_pred = np.array(y_pred_all[labels[i]], np.float64)
                 y_true = np.array(y_true_all[labels[i]], np.float64)
+                y_pred = self._gather_numpy(y_pred)
+                y_true = self._gather_numpy(y_true)
 
                 # Mask out labels with value -1
                 mask = y_true != -1
@@ -172,18 +175,21 @@ class MultiTaskModel(BaseModel):
                             threshold = col.get("threshold", 0.5)
                             break
 
-                if metrics is not None:
-                    val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id_i, threshold)
-                else:
-                    val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id_i, threshold)
-                logging.info('[Task: {}][Metrics] '.format(labels[i]) + ' - '.join(
-                    '{}: {:.6f}'.format(k, v) for k, v in val_logs.items()))
-                for k, v in val_logs.items():
-                    all_val_logs['{}_{}'.format(labels[i], k)] = v
-                    mean_val_logs[k].append(v)
-            for k, v in mean_val_logs.items():
-                mean_val_logs[k] = np.mean(v)
-            all_val_logs.update(mean_val_logs)
+                if self._is_master:
+                    if metrics is not None:
+                        val_logs = self.evaluate_metrics(y_true, y_pred, metrics, group_id_i, threshold)
+                    else:
+                        val_logs = self.evaluate_metrics(y_true, y_pred, self.validation_metrics, group_id_i, threshold)
+                    self._log('[Task: {}][Metrics] '.format(labels[i]) + ' - '.join(
+                        '{}: {:.6f}'.format(k, v) for k, v in val_logs.items()))
+                    for k, v in val_logs.items():
+                        all_val_logs['{}_{}'.format(labels[i], k)] = v
+                        mean_val_logs[k].append(v)
+            if self._is_master:
+                for k, v in mean_val_logs.items():
+                    mean_val_logs[k] = np.mean(v)
+                all_val_logs.update(mean_val_logs)
+            all_val_logs = self._broadcast_logs(all_val_logs)
             return all_val_logs
 
     def predict(self, data_generator):
@@ -191,11 +197,14 @@ class MultiTaskModel(BaseModel):
         with torch.no_grad():
             y_pred_all = defaultdict(list)
             labels = self.feature_map.labels
-            if self._verbose > 0:
+            if self._verbose > 0 and self._is_master:
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
                 for i in range(len(labels)):
                     y_pred_all[labels[i]].extend(
                         return_dict["{}_pred".format(labels[i])].data.cpu().numpy().reshape(-1))
+            for i in range(len(labels)):
+                y_pred = np.array(y_pred_all[labels[i]], np.float64)
+                y_pred_all[labels[i]] = self._gather_numpy(y_pred)
         return y_pred_all

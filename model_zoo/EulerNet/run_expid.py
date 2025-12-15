@@ -26,7 +26,7 @@ from datetime import datetime
 from fuxictr.utils import load_config, set_logger, print_to_json, print_to_list
 from fuxictr.features import FeatureMap
 from fuxictr.pytorch.dataloaders import RankDataLoader, DataFrameDataLoader
-from fuxictr.pytorch.torch_utils import seed_everything
+from fuxictr.pytorch.torch_utils import seed_everything, init_distributed_env
 from fuxictr.preprocess import FeatureProcessor, build_dataset
 import src
 import gc
@@ -35,31 +35,41 @@ import glob
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import torch.distributed as dist
 
 
 def run_train(model, feature_map, params, args):
+    rank = params.get('distributed_rank', 0)
     train_gen, valid_gen = RankDataLoader(feature_map, stage='train', **params).make_iterator()
     model.fit(train_gen, validation_data=valid_gen, **params)
 
-    logging.info('****** Validation evaluation ******')
+    if rank == 0:
+        logging.info('****** Validation evaluation ******')
     valid_result = model.evaluate(valid_gen)
     del train_gen, valid_gen
     gc.collect()
     
     test_result = {}
     if params["test_data"]:
-        logging.info('******** Test evaluation ********')
+        if rank == 0:
+            logging.info('******** Test evaluation ********')
         test_gen = RankDataLoader(feature_map, stage='test', **params).make_iterator()
         test_result = model.evaluate(test_gen)
     
-    result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
-    with open(result_filename, 'a+') as fw:
-        fw.write(' {},[command] python {},[exp_id] {},[dataset_id] {},[train] {},[val] {},[test] {}\n' \
-            .format(datetime.now().strftime('%Y%m%d-%H%M%S'), 
-                    ' '.join(sys.argv), args['expid'], params['dataset_id'],
-                    "N.A.", print_to_list(valid_result), print_to_list(test_result)))
+    if rank == 0:
+        result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
+        with open(result_filename, 'a+') as fw:
+            fw.write(' {},[command] python {},[exp_id] {},[dataset_id] {},[train] {},[val] {},[test] {}\n' \
+                .format(datetime.now().strftime('%Y%m%d-%H%M%S'), 
+                        ' '.join(sys.argv), args['expid'], params['dataset_id'],
+                        "N.A.", print_to_list(valid_result), print_to_list(test_result)))
 
 def run_inference(model, feature_map, params, args):
+    distributed = params.get('distributed', False)
+    rank = params.get('distributed_rank', 0)
+    if distributed and rank != 0:
+        logging.info("Rank %d skips inference; only master runs inference mode.", rank)
+        return
     model.load_weights(model.checkpoint)
     
     data_dir = os.path.join(params['data_root'], params['dataset_id'])
@@ -142,26 +152,46 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, default='./config/', help='The config directory.')
     parser.add_argument('--expid', type=str, default='DeepFM_test', help='The experiment id to run.')
     parser.add_argument('--gpu', type=int, default=-1, help='The gpu index, -1 for cpu')
+    parser.add_argument('--distributed', action='store_true', help='Enable torch.distributed for multi-GPU training')
+    parser.add_argument('--dist_backend', type=str, default='nccl', help='Torch distributed backend to use')
+    parser.add_argument('--local_rank', type=int, default=-1, help='Local rank passed by torchrun')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'inference'], help='The running mode.')
     args = vars(parser.parse_args())
     
     experiment_id = args['expid']
     params = load_config(args['config'], experiment_id)
-    params['gpu'] = args['gpu']
-    set_logger(params)
+    distributed, rank, world_size, local_rank = init_distributed_env(args)
+    params['gpu'] = local_rank if distributed else args['gpu']
+    params['distributed'] = distributed
+    params['distributed_rank'] = rank
+    params['distributed_world_size'] = world_size
+    params['local_rank'] = local_rank
+    if rank == 0:
+        set_logger(params)
+    else:
+        logging.basicConfig(level=logging.INFO if params.get('verbose', 0) > 0 else logging.WARNING)
+    logging.info("Rank {} initialized (world size {}).".format(rank, world_size))
     logging.info("Params: " + print_to_json(params))
     seed_everything(seed=params['seed'])
 
     data_dir = os.path.join(params['data_root'], params['dataset_id'])
     feature_map_json = os.path.join(data_dir, "feature_map.json")
     if params["data_format"] in ["csv", "parquet"] and args['mode'] == 'train':
-        # Build feature_map and transform data
-        feature_encoder = FeatureProcessor(**params)
-        params["train_data"], params["valid_data"], params["test_data"] = \
-            build_dataset(feature_encoder, **params)
+        data_splits = (None, None, None)
+        if rank == 0:
+            feature_encoder = FeatureProcessor(**params)
+            data_splits = build_dataset(feature_encoder, **params)
+        if distributed and dist.is_initialized():
+            shared = [data_splits]
+            dist.broadcast_object_list(shared, src=0)
+            data_splits = shared[0]
+        params["train_data"], params["valid_data"], params["test_data"] = data_splits
+        if distributed and dist.is_initialized():
+            dist.barrier()
     feature_map = FeatureMap(params['dataset_id'], data_dir)
     feature_map.load(feature_map_json, params)
-    logging.info("Feature specs: " + print_to_json(feature_map.features))
+    if rank == 0:
+        logging.info("Feature specs: " + print_to_json(feature_map.features))
     
     model_class = getattr(src, params['model'])
     model = model_class(feature_map, **params)
@@ -171,3 +201,7 @@ if __name__ == '__main__':
         run_train(model, feature_map, params, args)
     elif args['mode'] == 'inference':
         run_inference(model, feature_map, params, args)
+
+    if distributed and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()

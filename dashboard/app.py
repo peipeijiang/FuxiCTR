@@ -264,7 +264,7 @@ def _aggregate_process_usage(pid):
     try:
         root_proc = psutil.Process(pid)
     except psutil.Error:
-        return None, None
+        return None, None, None, None
 
     processes = [root_proc]
     try:
@@ -274,13 +274,87 @@ def _aggregate_process_usage(pid):
 
     total_cpu = 0.0
     total_mem = 0
+    pid_set = set()
     for proc in processes:
         try:
             total_cpu += _sample_cpu_percent(proc, cache)
             total_mem += proc.memory_info().rss
+            pid_set.add(proc.pid)
         except psutil.Error:
             continue
-    return total_cpu, total_mem
+    gpu_util, gpu_mem = _aggregate_gpu_usage(pid_set)
+    return total_cpu, total_mem, gpu_util, gpu_mem
+
+
+def _aggregate_gpu_usage(pids):
+    """Return (util%, bytes) summed across all GPUs touched by given pids."""
+    if not pids:
+        return None, None
+    try:
+        import pynvml
+    except Exception:
+        return None, None
+
+    try:
+        if not st.session_state.get("_nvml_initialized", False):
+            pynvml.nvmlInit()
+            st.session_state._nvml_initialized = True
+    except pynvml.NVMLError:
+        st.session_state._nvml_initialized = False
+        return None, None
+
+    total_util = 0.0
+    total_mem = 0
+    matched_any = False
+    try:
+        device_count = pynvml.nvmlDeviceGetCount()
+    except pynvml.NVMLError:
+        return None, None
+
+    proc_fn_names = [
+        "nvmlDeviceGetComputeRunningProcesses_v3",
+        "nvmlDeviceGetGraphicsRunningProcesses_v3",
+        "nvmlDeviceGetComputeRunningProcesses",
+        "nvmlDeviceGetGraphicsRunningProcesses",
+    ]
+
+    for idx in range(device_count):
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+        except pynvml.NVMLError:
+            continue
+        matched = False
+        device_mem = 0
+        proc_entries = []
+        for fn_name in proc_fn_names:
+            getter = getattr(pynvml, fn_name, None)
+            if getter is None:
+                continue
+            try:
+                proc_entries.extend(getter(handle))
+            except pynvml.NVMLError:
+                continue
+        for proc in proc_entries:
+            proc_pid = getattr(proc, "pid", None)
+            if proc_pid in pids:
+                matched = True
+                used = getattr(proc, "usedGpuMemory", 0) or 0
+                invalid = getattr(pynvml, "NVML_VALUE_NOT_AVAILABLE", None)
+                if invalid is not None and used == invalid:
+                    used = 0
+                device_mem += max(0, used)
+        if matched:
+            matched_any = True
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
+            except pynvml.NVMLError:
+                util = 0.0
+            total_util += util
+            total_mem += device_mem
+
+    if not matched_any:
+        return None, None
+    return total_util, total_mem
 
 # --- Run History Helpers ---
 def _history_path(username):
@@ -925,10 +999,19 @@ if selected_model:
                         # Get Resource Usage (root + children)
                         cpu_usage = "N/A"
                         mem_usage = "N/A"
-                        cpu_total, mem_total = _aggregate_process_usage(t['pid'])
-                        if cpu_total is not None and mem_total is not None:
+                        gpu_usage = "—"
+                        cpu_total, mem_total, gpu_util, gpu_mem = _aggregate_process_usage(t['pid'])
+                        if cpu_total is not None:
                             cpu_usage = f"{cpu_total:.1f}%"
+                        if mem_total is not None:
                             mem_usage = f"{mem_total / (1024 * 1024):.0f} MB"
+                        gpu_parts = []
+                        if gpu_util is not None:
+                            gpu_parts.append(f"{gpu_util:.0f}%")
+                        if gpu_mem is not None:
+                            gpu_parts.append(f"{gpu_mem / (1024 * 1024):.0f} MB")
+                        if gpu_parts:
+                            gpu_usage = " / ".join(gpu_parts)
 
                         task_data.append({
                             "用户": t['username'],
@@ -936,6 +1019,7 @@ if selected_model:
                             "PID": t['pid'],
                             "CPU": cpu_usage,
                             "内存": mem_usage,
+                            "GPU占用": gpu_usage,
                             "运行时长": dur_str
                         })
                     st.dataframe(task_data, hide_index=True, use_container_width=True)
@@ -1034,10 +1118,55 @@ if selected_model:
                 expid = st.text_input("Experiment ID", value=default_val, help="对应 model_config.yaml 中的 experiment_id")
         with col_p2:
             gpu_opts, gpu_labels = get_gpu_options()
+            if not gpu_opts:
+                gpu_opts = [-1]
+                gpu_labels = ["CPU (-1)"]
             gpu_map = dict(zip(gpu_opts, gpu_labels))
-            gpu = st.selectbox("GPU Device", options=gpu_opts, format_func=lambda x: gpu_map[x], index=0, help="选择使用的计算设备 (自动扫描)")
+
+            default_devices = st.session_state.get("_selected_devices", [])
+            default_devices = [d for d in default_devices if d in gpu_opts]
+            if not default_devices:
+                default_devices = [gpu_opts[0]]
+
+            selected_devices = st.multiselect(
+                "计算设备 (可多选)",
+                options=gpu_opts,
+                default=default_devices,
+                format_func=lambda x: gpu_map.get(x, str(x)),
+                help="选择一个或多个设备；多选时自动启用分布式训练"
+            )
+
+            if not selected_devices:
+                st.warning("未选择设备，已回退到默认 CPU/GPU。")
+                selected_devices = [gpu_opts[0]]
+
+            if -1 in selected_devices and len(selected_devices) > 1:
+                st.info("检测到 CPU 与 GPU 同时被选中，已自动忽略 CPU。")
+                selected_devices = [d for d in selected_devices if d != -1]
+                if not selected_devices:
+                    selected_devices = [gpu_opts[0]]
+
+            st.session_state._selected_devices = selected_devices
+            use_distributed = len(selected_devices) > 1
+            device_summary = ",".join(str(d) for d in selected_devices)
+            if use_distributed:
+                st.caption(f"💪 多卡模式：{device_summary}")
+            else:
+                st.caption(f"当前设备：{gpu_map.get(selected_devices[0], selected_devices[0])}")
         with col_p3:
             num_workers = st.number_input("Num Workers", min_value=1, max_value=16, value=3, help="数据加载线程数")
+
+        device_list = selected_devices[:]  # snapshot for command builders
+        device_meta_value = device_summary
+        multi_gpu_enabled = use_distributed
+
+        def build_run_command(run_mode):
+            if multi_gpu_enabled:
+                cuda_visible = ",".join(str(d) for d in device_list)
+                nproc = len(device_list)
+                torchrun_prefix = f"CUDA_VISIBLE_DEVICES={cuda_visible} torchrun --standalone --nnodes=1 --nproc_per_node={nproc}"
+                return f"cd {model_path} && {torchrun_prefix} python run_expid.py --distributed --expid {expid} --mode {run_mode}"
+            return f"cd {model_path} && python run_expid.py --expid {expid} --gpu {device_list[0]} --mode {run_mode}"
 
         st.markdown("#### 操作")
         
@@ -1168,7 +1297,7 @@ if selected_model:
                 st.error(f"生成配置失败：{e}")
                 st.stop()
 
-            cmd = f"cd {model_path} && python run_expid.py --expid {expid} --gpu {gpu} --mode train"
+            cmd = build_run_command("train")
             # Include username in log filename for isolation
             start_process(
                 cmd,
@@ -1178,7 +1307,7 @@ if selected_model:
                 meta={
                     "expid": expid,
                     "mode": "train",
-                    "gpu": gpu,
+                    "gpu": device_meta_value,
                     "num_workers": num_workers
                 }
             )
@@ -1285,7 +1414,7 @@ if selected_model:
                 st.error(f"生成配置失败：{e}")
                 st.stop()
 
-            cmd = f"cd {model_path} && python run_expid.py --expid {expid} --gpu {gpu} --mode inference"
+            cmd = build_run_command("inference")
             # Include username in log filename for isolation
             start_process(
                 cmd,
@@ -1295,7 +1424,7 @@ if selected_model:
                 meta={
                     "expid": expid,
                     "mode": "inference",
-                    "gpu": gpu,
+                    "gpu": device_meta_value,
                     "num_workers": num_workers
                 }
             )
@@ -1511,7 +1640,10 @@ if selected_model:
                 if rec.get('status') == 'running' and start_ts:
                     duration_val = now_ts - start_ts
                 gpu_val = rec.get('gpu')
-                gpu_display = 'CPU' if gpu_val in (None, -1) else str(gpu_val)
+                if gpu_val in (None, -1, "-1"):
+                    gpu_display = 'CPU'
+                else:
+                    gpu_display = str(gpu_val)
                 success_flag = rec.get('success')
                 success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
                 detail_rows.append({

@@ -122,3 +122,4 @@ data/
 # Dashboard logs configs
 dashboard/logs/configs/
 dashboard/user_configs/
+dashboard/state/

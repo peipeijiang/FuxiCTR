@@ -21,9 +21,12 @@ import os
 import numpy as np
 import torch
 from torch import nn
+import torch.distributed as dist
 import random
 from functools import partial
 import re
+
+from fuxictr.pytorch import losses
 
 
 def seed_everything(seed=1029):
@@ -52,6 +55,10 @@ def get_optimizer(optimizer, params, lr):
     return optimizer
 
 def get_loss(loss):
+    params = {}
+    if isinstance(loss, dict):
+        params = loss.get("params", {}) or {}
+        loss = loss.get("name") or loss.get("fn")
     if isinstance(loss, str):
         if loss in ["bce", "binary_crossentropy", "binary_cross_entropy"]:
             loss = "binary_cross_entropy"
@@ -59,9 +66,11 @@ def get_loss(loss):
         loss_fn = getattr(torch.functional.F, loss)
     except:
         try: 
-            loss_fn = eval("losses." + loss)
+            loss_fn = eval("losses." + str(loss))
         except:
-            raise NotImplementedError("loss={} is not supported.".format(loss))       
+            raise NotImplementedError("loss={} is not supported.".format(loss))      
+    if params:
+        return partial(loss_fn, **params)
     return loss_fn
 
 def get_regularizer(reg):
@@ -117,3 +126,36 @@ def get_initializer(initializer):
             raise ValueError("initializer={} is not supported."\
                              .format(initializer))
     return initializer
+
+
+def init_distributed_env(cli_args):
+    """Initialize torch.distributed using common CLI args.
+
+    Args:
+        cli_args (dict): Parsed argparse namespace as dict containing
+            --distributed, --dist_backend, --local_rank, --gpu, etc.
+
+    Returns:
+        tuple: (distributed(bool), rank(int), world_size(int), local_rank(int))
+    """
+    requested = cli_args.get('distributed', False)
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    env_rank = int(os.environ.get("RANK", "0"))
+    world_size = max(env_world_size, 1)
+    distributed = requested or world_size > 1
+    if world_size <= 1:
+        distributed = False
+    if not distributed:
+        return False, 0, 1, cli_args.get('gpu', -1)
+    if not dist.is_available():
+        raise RuntimeError("torch.distributed is not available but distributed mode is requested.")
+    rank = env_rank
+    local_rank = cli_args.get('local_rank', -1)
+    if local_rank == -1:
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    backend = cli_args.get('dist_backend', 'nccl')
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    if not dist.is_initialized():
+        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    return True, rank, world_size, local_rank
