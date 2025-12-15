@@ -103,7 +103,9 @@ class FeatureProcessor(object):
     def preprocess(self, ddf):
         logging.info("Preprocess feature columns...")
         all_cols = self.label_cols + self.feature_cols[::-1]
-        col_names = ddf.columns
+        schema = ddf.collect_schema()
+        col_names = schema.names()
+        dtype_map = {n: d for n, d in zip(schema.names(), schema.dtypes())}
         for col in all_cols:
             name = col["name"]
             fill_na = None
@@ -130,7 +132,8 @@ class FeatureProcessor(object):
                 )
             if (fill_na is not None) and (not col_exist):
                 ddf = ddf.with_columns(pl.lit(fill_na).alias(name))
-            if col_exist and col.get("type") == "sequence" and isinstance(ddf.select(name).dtypes[0], pl.List):
+            col_dtype = dtype_map.get(name)
+            if col_exist and col.get("type") == "sequence" and isinstance(col_dtype, pl.List):
                 # Convert list to "^" seperated string for unified preprocessing of parquet and csv formats
                 ddf = ddf.with_columns(pl.col(name).map_elements(lambda x: "^".join(map(str, x)), return_dtype=pl.String))
         active_cols = [col["name"] for col in all_cols if col.get("active") != False]

@@ -242,6 +242,46 @@ def remove_task_state(pid):
             except:
                 pass
 
+
+def _sample_cpu_percent(proc, cache, warm_interval=0.1):
+    """Return cpu_percent for a process, warming up if the first measurement was zero."""
+    pid = proc.pid
+    value = proc.cpu_percent(interval=0.0)
+    if value == 0.0:
+        now = time.time()
+        last_probe = cache.get(pid, 0)
+        if now - last_probe > warm_interval:
+            value = proc.cpu_percent(interval=warm_interval)
+            cache[pid] = now
+    return value
+
+
+def _aggregate_process_usage(pid):
+    """Collect CPU% and memory for a pid including all child processes."""
+    if "_cpu_probe_cache" not in st.session_state:
+        st.session_state._cpu_probe_cache = {}
+    cache = st.session_state._cpu_probe_cache
+    try:
+        root_proc = psutil.Process(pid)
+    except psutil.Error:
+        return None, None
+
+    processes = [root_proc]
+    try:
+        processes.extend(root_proc.children(recursive=True))
+    except psutil.Error:
+        pass
+
+    total_cpu = 0.0
+    total_mem = 0
+    for proc in processes:
+        try:
+            total_cpu += _sample_cpu_percent(proc, cache)
+            total_mem += proc.memory_info().rss
+        except psutil.Error:
+            continue
+    return total_cpu, total_mem
+
 # --- Run History Helpers ---
 def _history_path(username):
     return os.path.join(HISTORY_DIR, f"{username}.json")
@@ -762,6 +802,7 @@ if selected_model:
                 initial_text, 
                 lang=lang, 
                 key=editor_key,
+                response_mode="debounce",  # ensure latest text is returned without needing an explicit submit
                 options=editor_options,
                 buttons=[{
                     "name": "Copy",
@@ -772,7 +813,12 @@ if selected_model:
                     "style": {"top": "0.46rem", "right": "0.4rem"}
                 }]
             )
-            return res['text']
+            # If the editor hasn't emitted any event yet (type/text empty), fallback to the current visible text
+            if isinstance(res, dict):
+                if res.get("text") == "" and res.get("type", "") == "":
+                    return initial_text
+                return res.get("text", initial_text)
+            return initial_text
 
         # Load contents
         ds_content = load_file_content(dataset_config_path)
@@ -876,20 +922,13 @@ if selected_model:
                         hours, mins = divmod(mins, 60)
                         dur_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m {secs}s"
                         
-                        # Get Resource Usage
+                        # Get Resource Usage (root + children)
                         cpu_usage = "N/A"
                         mem_usage = "N/A"
-                        try:
-                            proc = psutil.Process(t['pid'])
-                            # Use a small interval to get a non-zero CPU reading
-                            cpu_percent = proc.cpu_percent(interval=0.1)
-                            mem_info = proc.memory_info()
-                            mem_mb = mem_info.rss / (1024 * 1024)
-                            
-                            cpu_usage = f"{cpu_percent:.1f}%"
-                            mem_usage = f"{mem_mb:.0f} MB"
-                        except:
-                            pass
+                        cpu_total, mem_total = _aggregate_process_usage(t['pid'])
+                        if cpu_total is not None and mem_total is not None:
+                            cpu_usage = f"{cpu_total:.1f}%"
+                            mem_usage = f"{mem_total / (1024 * 1024):.0f} MB"
 
                         task_data.append({
                             "用户": t['username'],
