@@ -34,7 +34,7 @@ def determine_mkl_threading_layer(devices):
 
 # Set page config
 st.set_page_config(
-    page_title="FuxiCTR 实验平台",
+    page_title="XFDL 实验平台",
     page_icon="🍭",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -503,7 +503,7 @@ def get_download_link(content, filename, label):
 
 # --- Tutorial Page ---
 def render_tutorial():
-    st.title("📚 FuxiCTR 平台使用指南")
+    st.title("📚 XFDL 平台使用指南")
     
     if st.button("🔙 返回主页"):
         st.session_state.show_tutorial = False
@@ -513,7 +513,7 @@ def render_tutorial():
     
     st.markdown("""
     ## 1. 平台简介
-    FuxiCTR 是一个可配置、模块化、高性能的 CTR 预估库。本平台（FuxiCTR Studio）提供了一个可视化的界面，用于管理实验、配置参数、监控任务和分析结果。
+    FuxiCTR 是一个可配置、模块化、高性能的 CTR 预估库。本平台（XFDL Studio）提供了一个可视化的界面，用于管理实验、配置参数、监控任务和分析结果。
     
     ## 2. 快速入门 (App 使用流程)
     
@@ -611,7 +611,7 @@ if st.session_state.show_tutorial:
 
 col_main, col_help = st.columns([6, 1])
 with col_main:
-    st.title("FuxiCTR 实验平台")
+    st.title("XFDL 实验平台")
 with col_help:
     st.write("")
     if st.button("📘 使用教程"):
