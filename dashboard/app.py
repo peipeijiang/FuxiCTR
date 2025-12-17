@@ -504,105 +504,22 @@ def get_download_link(content, filename, label):
 # --- Tutorial Page ---
 def render_tutorial():
     st.title("📚 XFDL 平台使用指南")
-    
+    st.markdown("---")
     if st.button("🔙 返回主页"):
         st.session_state.show_tutorial = False
         st.rerun()
-        
+    st.markdown("")
+    guide_path = os.path.join(ROOT_DIR, "dashboard", "CONFIG_GUIDE.md")
+    try:
+        with open(guide_path, "r", encoding="utf-8") as f:
+            guide_md = f.read()
+        st.markdown(guide_md)
+    except Exception as e:
+        st.error(f"无法读取配置指南：{e}")
     st.markdown("---")
-    
-    st.markdown("""
-    ## 1. 平台简介
-    FuxiCTR 是一个可配置、模块化、高性能的 CTR 预估库。本平台（XFDL Studio）提供了一个可视化的界面，用于管理实验、配置参数、监控任务和分析结果。
-    
-    ## 2. 快速入门 (App 使用流程)
-    
-    ### 第一步：身份设置
-    在左侧边栏的 **"用户身份"** 区域输入您的用户名。
-    *   **作用**：用于区分不同用户的任务，防止日志冲突，并进行资源配额管理（每人同时限跑 1 个任务）。
-    
-    ### 第二步：选择模型
-    在左侧边栏选择您要实验的模型（例如 `DeepFM` 或 `DCN`）。
-    *   选择后，主界面会自动加载该模型的配置文件。
-    
-    ### 第三步：数据配置
-    您有两种方式配置数据：
-    1.  **快速覆盖 (推荐)**：在侧边栏勾选 `✅ 启用数据集覆盖`，然后选择一个预设的数据集（如 `tiny_csv`）。系统会自动生成临时的配置文件。
-    2.  **手动配置**：在主界面的 `🛠️ 配置管理` 标签页中，直接编辑 `dataset_config.yaml`。
-    
-    ### 第四步：启动任务
-    切换到 `▶️ 任务执行` 标签页：
-    1.  设置 **实验ID** (Experiment ID)。
-    2.  选择 **GPU 设备** (或使用 CPU)。
-    3.  点击 `🔥 开始训练` 或 `🔮 开始推理`。
-    
-    ### 第五步：监控与分析
-    *   **实时日志**：任务启动后，下方会自动显示运行日志。
-    *   **任务监控**：展开 `📡 服务器活动与任务监控` 面板，查看当前服务器负载和您的任务状态。
-    *   **可视化**：训练完成后，切换到 `📈 可视化` 标签页，一键启动 TensorBoard 查看 Loss 和 AUC 曲线。
-    
-    ---
-    
-    ## 3. 核心配置详解
-    
-    ### 🛠 dataset_config.yaml (数据配置)
-    此文件定义了数据集的路径、格式和特征处理方式。
-    
-    ```yaml
-    dataset_id:
-        data_root: ../data/  # 数据根目录
-        data_format: csv     # 数据格式: csv, h5, parquet 等
-        train_data: ../data/train.csv
-        valid_data: ../data/valid.csv
-        test_data: ../data/test.csv
-        min_categr_count: 1
-        feature_cols:        # 特征定义列表
-            - {name: user_id, active: True, dtype: str, type: categorical}
-            - {name: item_id, active: True, dtype: str, type: categorical}
-            - {name: age, active: True, dtype: float, type: numeric}
-        label_col: {name: click, dtype: float}
-    ```
-    
-    ### ⚙️ model_config.yaml (模型配置)
-    此文件定义了模型的超参数、优化器和训练设置。
-    
-    ```yaml
-    Base: # 所有模型的基类配置
-        model_root: './checkpoints/'
-        workers: 3
-        verbose: 1
-        patience: 2
-        pickle_feature_encoder: True
-        use_hdf5: True
-        save_best_only: True
-        every_x_epochs: 1
-        debug: False
-
-    DeepFM_test: # 特定实验配置
-        model: DeepFM
-        dataset_id: tiny_csv # 关联 dataset_config 中的 ID
-        loss: 'binary_crossentropy'
-        metrics: ['logloss', 'AUC']
-        task: binary_classification
-        optimizer: adam
-        learning_rate: 1.e-3
-        embedding_regularizer: 1.e-8
-        net_regularizer: 0
-        batch_size: 128
-        embedding_dim: 4
-        epochs: 1
-        shuffle: True
-        seed: 2019
-        monitor: 'AUC'
-        monitor_mode: 'max'
-    ```
-    
-    ## 4. 常见问题
-    *   **Q: 为什么无法启动任务？**
-        *   A: 请检查是否已输入用户名，或者是否已达到个人/全局任务数量限制。
-    *   **Q: 如何查看历史日志？**
-        *   A: 在 `📊 模型权重` 标签页中，选择对应的数据集目录，可以查看和预览历史日志文件。
-    """)
+    if st.button("返回主界面"):
+        st.session_state.show_tutorial = False
+        st.rerun()
     st.stop() # Stop execution here to show only tutorial
 
 # Header
@@ -638,7 +555,7 @@ with st.sidebar:
     if st.session_state.prev_user in USER_OPTIONS:
         default_index = USER_OPTIONS.index(st.session_state.prev_user)
 
-    current_user = st.selectbox("用户名", USER_OPTIONS, index=default_index, help="用于任务限制（每位用户最多 1 个任务）。")
+    current_user = st.selectbox("用户名", USER_OPTIONS, index=default_index, help="用于任务限制（每位用户最多 3 个任务）。")
     
     # Detect User Switch
     if current_user != st.session_state.prev_user:
@@ -986,11 +903,11 @@ if selected_model:
             col_m1, col_m2, col_m3 = st.columns([1, 1, 2])
             
             with col_m1:
-                st.metric("全局负载", f"{global_task_count} / 3", help="服务器上的总活跃任务数")
+                st.metric("全局负载", f"{global_task_count} / 10", help="服务器上的总活跃任务数")
             
             with col_m2:
                 delta_color = "normal" if user_task_count == 0 else "off"
-                st.metric("您的配额", f"{user_task_count} / 1", "活跃任务", delta_color=delta_color, help="您同时最多只能运行 1 个任务")
+                st.metric("您的配额", f"{user_task_count} / 3", "活跃任务", delta_color=delta_color, help="您同时最多只能运行 3 个任务")
             
             with col_m3:
                 if active_tasks:
@@ -1206,12 +1123,12 @@ if selected_model:
             limit_msg = "需要用户名。"
         elif st.session_state.run_pid is not None:
             can_start = False # Already running in this session
-        elif user_task_count >= 1:
+        elif user_task_count >= 3:
             can_start = False
-            limit_msg = f"达到用户限制 ({user_task_count}/1)。"
-        elif global_task_count >= 3:
+            limit_msg = f"达到用户限制 ({user_task_count}/3)。"
+        elif global_task_count >= 10:
             can_start = False
-            limit_msg = f"达到全局限制 ({global_task_count}/3)。"
+            limit_msg = f"达到全局限制 ({global_task_count}/10)。"
 
         if col_train.button("🔥 开始训练", type="primary", disabled=not can_start):
             if not can_start and limit_msg:
