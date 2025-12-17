@@ -26,7 +26,7 @@ from datetime import datetime
 from fuxictr.utils import load_config, set_logger, print_to_json, print_to_list
 from fuxictr.features import FeatureMap
 from fuxictr.pytorch.dataloaders import RankDataLoader, DataFrameDataLoader
-from fuxictr.pytorch.torch_utils import seed_everything, init_distributed_env
+from fuxictr.pytorch.torch_utils import seed_everything, init_distributed_env, distributed_barrier
 from fuxictr.preprocess import FeatureProcessor, build_dataset
 import src
 import gc
@@ -35,6 +35,7 @@ import glob
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import torch
 import torch.distributed as dist
 
 
@@ -187,7 +188,7 @@ if __name__ == '__main__':
             data_splits = shared[0]
         params["train_data"], params["valid_data"], params["test_data"] = data_splits
         if distributed and dist.is_initialized():
-            dist.barrier()
+            distributed_barrier()
     feature_map = FeatureMap(params['dataset_id'], data_dir)
     feature_map.load(feature_map_json, params)
     if rank == 0:
@@ -203,5 +204,5 @@ if __name__ == '__main__':
         run_inference(model, feature_map, params, args)
 
     if distributed and dist.is_initialized():
-        dist.barrier()
+        distributed_barrier()
         dist.destroy_process_group()

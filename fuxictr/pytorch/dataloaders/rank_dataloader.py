@@ -57,14 +57,14 @@ class _DistributedDataLoaderWrapper:
 class RankDataLoader(object):
     def __init__(self, feature_map, stage="both", train_data=None, valid_data=None, test_data=None,
                  batch_size=32, shuffle=True, streaming=False, data_format="npz", **kwargs):
+        self._distributed_rank = kwargs.pop("distributed_rank", 0)
+        self._distributed_world_size = kwargs.pop("distributed_world_size", 1)
+        self._distributed = self._distributed_world_size > 1
         if self._distributed_rank == 0:
             logging.info("Loading datasets...")
         train_gen = None
         valid_gen = None
         test_gen = None
-        self._distributed_rank = kwargs.pop("distributed_rank", 0)
-        self._distributed_world_size = kwargs.pop("distributed_world_size", 1)
-        self._distributed = self._distributed_world_size > 1
         if kwargs.get("data_loader"):
             DataLoader = kwargs["data_loader"]
         else:

@@ -159,3 +159,26 @@ def init_distributed_env(cli_args):
     if not dist.is_initialized():
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
     return True, rank, world_size, local_rank
+
+
+def distributed_barrier(device=None):
+    """Issue dist.barrier with explicit device ids when needed (e.g., NCCL)."""
+    if (not dist.is_available()) or (not dist.is_initialized()):
+        return
+    backend_name = str(dist.get_backend()).lower()
+    if "nccl" in backend_name and torch.cuda.is_available():
+        device_index = None
+        if device is not None:
+            if isinstance(device, torch.device):
+                if device.type == "cuda":
+                    device_index = device.index
+            elif isinstance(device, int):
+                device_index = device
+        if device_index is None:
+            try:
+                device_index = torch.cuda.current_device()
+            except Exception:
+                device_index = 0
+        dist.barrier(device_ids=[device_index])
+    else:
+        dist.barrier()

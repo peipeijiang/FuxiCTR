@@ -25,6 +25,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 
 
+# NumPy 2.0 removed np.unicode_; provide a backward-compatible alias for callers
+if not hasattr(np, "unicode_"):
+    np.unicode_ = np.str_
+
+
 class Tokenizer(object):
     def __init__(self, max_features=None, na_value="", min_freq=1, splitter=None, remap=True,
                  lower=False, max_len=0, padding="pre"):

@@ -29,7 +29,7 @@ except ImportError:
     SummaryWriter = None
 from fuxictr.pytorch.layers import FeatureEmbeddingDict
 from fuxictr.metrics import evaluate_metrics
-from fuxictr.pytorch.torch_utils import get_device, get_optimizer, get_loss, get_regularizer
+from fuxictr.pytorch.torch_utils import get_device, get_optimizer, get_loss, get_regularizer, distributed_barrier
 from fuxictr.utils import Monitor, not_in_whitelist
 from tqdm import tqdm
 
@@ -157,7 +157,7 @@ class BaseModel(nn.Module):
             max_gradient_norm=10., **kwargs):
         self.valid_gen = validation_data
         self._max_gradient_norm = max_gradient_norm
-        self._best_metric = np.Inf if self._monitor_mode == "min" else -np.Inf
+        self._best_metric = np.inf if self._monitor_mode == "min" else -np.inf
         self._stopping_steps = 0
         self._steps_per_epoch = len(data_generator)
         self._stop_training = False
@@ -360,7 +360,8 @@ class BaseModel(nn.Module):
 
     def _distributed_barrier(self):
         if self._distributed and dist.is_initialized():
-            dist.barrier()
+            device = self.device if self.device.type == "cuda" else None
+            distributed_barrier(device=device)
 
     def _broadcast_object(self, obj):
         if not self._distributed or not dist.is_initialized():

@@ -27,6 +27,11 @@ def get_gpu_options():
     
     return options, labels
 
+
+def determine_mkl_threading_layer(devices):
+    """Use GNU runtime whenever a GPU device participates."""
+    return "GNU" if any(d is not None and d >= 0 for d in devices) else "INTEL"
+
 # Set page config
 st.set_page_config(
     page_title="FuxiCTR 实验平台",
@@ -1026,7 +1031,7 @@ if selected_model:
                 else:
                     st.info("暂无活跃任务")
                             
-        def start_process(command, log_filename, model_name, config_override_path=None, meta=None):
+        def start_process(command, log_filename, model_name, config_override_path=None, meta=None, env_overrides=None):
             log_path = os.path.join(LOG_DIR, log_filename)
             f = open(log_path, "w")
             
@@ -1050,8 +1055,16 @@ if selected_model:
                 # Replace run_expid.py in the command with the custom script name
                 final_cmd = final_cmd.replace("run_expid.py", custom_script_name)
             
+            env = os.environ.copy()
+            if env_overrides:
+                for key, value in env_overrides.items():
+                    if value is None:
+                        env.pop(key, None)
+                    else:
+                        env[key] = str(value)
+            
             # Use start_new_session=True to create a process group, so we can kill the whole tree later
-            p = subprocess.Popen(final_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+            p = subprocess.Popen(final_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, start_new_session=True, env=env)
             f.close()
             
             # Update Session State
@@ -1123,15 +1136,20 @@ if selected_model:
                 gpu_labels = ["CPU (-1)"]
             gpu_map = dict(zip(gpu_opts, gpu_labels))
 
-            default_devices = st.session_state.get("_selected_devices", [])
-            default_devices = [d for d in default_devices if d in gpu_opts]
-            if not default_devices:
-                default_devices = [gpu_opts[0]]
+            stored_devices = st.session_state.get("_selected_devices", [])
+            stored_devices = [d for d in stored_devices if d in gpu_opts]
+            if not stored_devices:
+                stored_devices = [gpu_opts[0]]
+            st.session_state["_selected_devices"] = stored_devices[:]
+
+            if "device_selector" not in st.session_state:
+                st.session_state["device_selector"] = stored_devices[:]
 
             selected_devices = st.multiselect(
                 "计算设备 (可多选)",
                 options=gpu_opts,
-                default=default_devices,
+                default=st.session_state.get("device_selector", stored_devices),
+                key="device_selector",
                 format_func=lambda x: gpu_map.get(x, str(x)),
                 help="选择一个或多个设备；多选时自动启用分布式训练"
             )
@@ -1146,13 +1164,15 @@ if selected_model:
                 if not selected_devices:
                     selected_devices = [gpu_opts[0]]
 
-            st.session_state._selected_devices = selected_devices
+            st.session_state["_selected_devices"] = selected_devices[:]
             use_distributed = len(selected_devices) > 1
             device_summary = ",".join(str(d) for d in selected_devices)
+            mkl_threading_layer = determine_mkl_threading_layer(selected_devices)
             if use_distributed:
                 st.caption(f"💪 多卡模式：{device_summary}")
             else:
                 st.caption(f"当前设备：{gpu_map.get(selected_devices[0], selected_devices[0])}")
+            st.caption(f"MKL 线程层自动设置为 {mkl_threading_layer}，以匹配当前设备。")
         with col_p3:
             num_workers = st.number_input("Num Workers", min_value=1, max_value=16, value=3, help="数据加载线程数")
 
@@ -1165,7 +1185,7 @@ if selected_model:
                 cuda_visible = ",".join(str(d) for d in device_list)
                 nproc = len(device_list)
                 torchrun_prefix = f"CUDA_VISIBLE_DEVICES={cuda_visible} torchrun --standalone --nnodes=1 --nproc_per_node={nproc}"
-                return f"cd {model_path} && {torchrun_prefix} python run_expid.py --distributed --expid {expid} --mode {run_mode}"
+                return f"cd {model_path} && {torchrun_prefix} run_expid.py --distributed --expid {expid} --mode {run_mode}"
             return f"cd {model_path} && python run_expid.py --expid {expid} --gpu {device_list[0]} --mode {run_mode}"
 
         st.markdown("#### 操作")
@@ -1309,7 +1329,8 @@ if selected_model:
                     "mode": "train",
                     "gpu": device_meta_value,
                     "num_workers": num_workers
-                }
+                },
+                env_overrides={"MKL_THREADING_LAYER": mkl_threading_layer}
             )
             st.rerun()
 
@@ -1426,7 +1447,8 @@ if selected_model:
                     "mode": "inference",
                     "gpu": device_meta_value,
                     "num_workers": num_workers
-                }
+                },
+                env_overrides={"MKL_THREADING_LAYER": mkl_threading_layer}
             )
             st.rerun()
             
