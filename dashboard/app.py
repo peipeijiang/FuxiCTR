@@ -296,6 +296,9 @@ def _aggregate_gpu_usage(pids):
     If no specific process matches, return total GPU utilization across all devices."""
     try:
         import pynvml
+    except ImportError:
+        # pynvml not installed, return None
+        return None, None
     except Exception:
         return None, None
 
@@ -305,6 +308,8 @@ def _aggregate_gpu_usage(pids):
             st.session_state._nvml_initialized = True
     except pynvml.NVMLError:
         st.session_state._nvml_initialized = False
+        return None, None
+    except Exception:
         return None, None
 
     total_util = 0.0
@@ -1030,13 +1035,160 @@ if selected_model:
             
         def stop_process():
             if st.session_state.run_pid:
+                import logging
+                logging.basicConfig(level=logging.WARNING)
+                
                 try:
-                    # Kill the process group to ensure child processes (like the python script) are also killed
-                    # Since start_new_session=True was used, the PID is the PGID.
-                    # We use SIGKILL (9) to ensure it stops, and avoid os.getpgid lookup which fails if parent is dead.
-                    os.killpg(st.session_state.run_pid, signal.SIGKILL)
-                except Exception:
-                    pass
+                    pid = st.session_state.run_pid
+                    
+                    # 1. 先尝试正常终止（SIGTERM）
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        time.sleep(1)  # 给进程时间正常退出
+                    except Exception:
+                        pass
+                    
+                    # 2. 如果还在运行，强制终止（SIGKILL）
+                    try:
+                        os.kill(pid, 0)  # 检查进程是否存在
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass  # 进程已经退出
+                    
+                    # 3. 清理可能的子进程（分布式训练的子进程）
+                    try:
+                        parent = psutil.Process(pid)
+                        children = parent.children(recursive=True)
+                        for child in children:
+                            try:
+                                child.terminate()
+                            except:
+                                pass
+                        
+                        # 等待子进程退出
+                        gone, alive = psutil.wait_procs(children, timeout=3)
+                        for child in alive:
+                            try:
+                                child.kill()
+                            except:
+                                pass
+                    except:
+                        pass
+                    
+                    # 4. 安全地清理当前用户的TCPStore相关进程和端口占用
+                    try:
+                        import subprocess
+                        # 使用前端选择的用户名，而不是系统用户名
+                        current_username = current_user
+                        
+                        # 安全方法1：只清理当前用户的进程
+                        # 使用pgrep查找当前用户的进程，然后逐个杀死
+                        try:
+                            # 查找当前用户的torchrun进程
+                            result = subprocess.run(["pgrep", "-u", current_username, "-f", "torchrun"], 
+                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
+                            if result.stdout:
+                                pids = result.stdout.strip().split()
+                                for proc_pid in pids:
+                                    try:
+                                        # 检查是否是当前进程的子进程
+                                        parent = psutil.Process(pid)
+                                        children = parent.children(recursive=True)
+                                        child_pids = [str(child.pid) for child in children]
+                                        if proc_pid in child_pids or proc_pid == str(pid):
+                                            subprocess.run(["kill", "-9", proc_pid], 
+                                                         stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                                    except:
+                                        pass
+                        except:
+                            pass
+                        
+                        try:
+                            # 查找当前用户的python run_expid进程
+                            result = subprocess.run(["pgrep", "-u", current_username, "-f", "python.*run_expid"], 
+                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
+                            if result.stdout:
+                                pids = result.stdout.strip().split()
+                                for proc_pid in pids:
+                                    try:
+                                        # 检查是否是当前进程的子进程
+                                        parent = psutil.Process(pid)
+                                        children = parent.children(recursive=True)
+                                        child_pids = [str(child.pid) for child in children]
+                                        if proc_pid in child_pids or proc_pid == str(pid):
+                                            subprocess.run(["kill", "-9", proc_pid], 
+                                                         stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                                    except:
+                                        pass
+                        except:
+                            pass
+                        
+                        # 安全方法2：只清理当前进程打开的端口
+                        try:
+                            # 查找当前进程及其子进程打开的端口
+                            def get_process_ports(process_pid):
+                                """获取进程及其子进程打开的所有端口"""
+                                ports = set()
+                                try:
+                                    proc = psutil.Process(process_pid)
+                                    # 获取当前进程的连接
+                                    for conn in proc.connections():
+                                        if conn.laddr:
+                                            ports.add(conn.laddr.port)
+                                    # 获取子进程的连接
+                                    for child in proc.children(recursive=True):
+                                        try:
+                                            for conn in child.connections():
+                                                if conn.laddr:
+                                                    ports.add(conn.laddr.port)
+                                        except:
+                                            pass
+                                except:
+                                    pass
+                                return ports
+                            
+                            # 获取当前进程的所有端口
+                            process_ports = get_process_ports(pid)
+                            
+                            # 清理这些端口
+                            for port in process_ports:
+                                try:
+                                    result = subprocess.run(["lsof", f"-ti:{port}"], 
+                                                          capture_output=True, text=True, stderr=subprocess.DEVNULL)
+                                    if result.stdout:
+                                        port_pids = result.stdout.strip().split()
+                                        for port_pid in port_pids:
+                                            # 检查端口进程是否是当前进程的子进程
+                                            try:
+                                                port_proc = psutil.Process(int(port_pid))
+                                                if port_proc.username() == current_username:
+                                                    # 进一步检查是否是当前进程树
+                                                    parent = psutil.Process(pid)
+                                                    children = parent.children(recursive=True)
+                                                    child_pids = [child.pid for child in children]
+                                                    if int(port_pid) in child_pids or int(port_pid) == pid:
+                                                        subprocess.run(["kill", "-9", port_pid], 
+                                                                     stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                                            except:
+                                                pass
+                                except:
+                                    pass
+                        except:
+                            pass
+                        
+                    except Exception as e:
+                        logging.warning(f"清理进程时出错: {e}")
+                    
+                    # 5. 清理GPU内存
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except:
+                        pass
+                    
+                except Exception as e:
+                    logging.warning(f"停止进程时出错: {e}")
                 
                 update_history_record(current_user, st.session_state.run_pid, "stopped")
                 
