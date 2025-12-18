@@ -292,9 +292,8 @@ def _aggregate_process_usage(pid):
 
 
 def _aggregate_gpu_usage(pids):
-    """Return (util%, bytes) summed across all GPUs touched by given pids."""
-    if not pids:
-        return None, None
+    """Return (util%, bytes) summed across all GPUs touched by given pids.
+    If no specific process matches, return total GPU utilization across all devices."""
     try:
         import pynvml
     except Exception:
@@ -316,49 +315,69 @@ def _aggregate_gpu_usage(pids):
     except pynvml.NVMLError:
         return None, None
 
-    proc_fn_names = [
-        "nvmlDeviceGetComputeRunningProcesses_v3",
-        "nvmlDeviceGetGraphicsRunningProcesses_v3",
-        "nvmlDeviceGetComputeRunningProcesses",
-        "nvmlDeviceGetGraphicsRunningProcesses",
-    ]
+    # First try to match specific processes
+    if pids:
+        proc_fn_names = [
+            "nvmlDeviceGetComputeRunningProcesses_v3",
+            "nvmlDeviceGetGraphicsRunningProcesses_v3",
+            "nvmlDeviceGetComputeRunningProcesses",
+            "nvmlDeviceGetGraphicsRunningProcesses",
+        ]
 
-    for idx in range(device_count):
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
-        except pynvml.NVMLError:
-            continue
-        matched = False
-        device_mem = 0
-        proc_entries = []
-        for fn_name in proc_fn_names:
-            getter = getattr(pynvml, fn_name, None)
-            if getter is None:
-                continue
+        for idx in range(device_count):
             try:
-                proc_entries.extend(getter(handle))
+                handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
             except pynvml.NVMLError:
                 continue
-        for proc in proc_entries:
-            proc_pid = getattr(proc, "pid", None)
-            if proc_pid in pids:
-                matched = True
-                used = getattr(proc, "usedGpuMemory", 0) or 0
-                invalid = getattr(pynvml, "NVML_VALUE_NOT_AVAILABLE", None)
-                if invalid is not None and used == invalid:
-                    used = 0
-                device_mem += max(0, used)
-        if matched:
-            matched_any = True
+            matched = False
+            device_mem = 0
+            proc_entries = []
+            for fn_name in proc_fn_names:
+                getter = getattr(pynvml, fn_name, None)
+                if getter is None:
+                    continue
+                try:
+                    proc_entries.extend(getter(handle))
+                except pynvml.NVMLError:
+                    continue
+            for proc in proc_entries:
+                proc_pid = getattr(proc, "pid", None)
+                if proc_pid in pids:
+                    matched = True
+                    used = getattr(proc, "usedGpuMemory", 0) or 0
+                    invalid = getattr(pynvml, "NVML_VALUE_NOT_AVAILABLE", None)
+                    if invalid is not None and used == invalid:
+                        used = 0
+                    device_mem += max(0, used)
+            if matched:
+                matched_any = True
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
+                except pynvml.NVMLError:
+                    util = 0.0
+                total_util += util
+                total_mem += device_mem
+    
+    # If no specific process matched, return total GPU utilization across all devices
+    # This is useful for distributed training where child processes might not be detected
+    if not matched_any:
+        for idx in range(device_count):
             try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
                 util = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                total_util += util
+                total_mem += mem_info.used
+                matched_any = True
             except pynvml.NVMLError:
-                util = 0.0
-            total_util += util
-            total_mem += device_mem
-
+                continue
+    
     if not matched_any:
         return None, None
+    
+    # Normalize utilization to percentage (already in percentage)
+    # Round to 1 decimal place for display
+    total_util = round(total_util, 1)
     return total_util, total_mem
 
 # --- Run History Helpers ---

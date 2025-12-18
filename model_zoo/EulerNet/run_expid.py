@@ -68,9 +68,8 @@ def run_train(model, feature_map, params, args):
 def run_inference(model, feature_map, params, args):
     distributed = params.get('distributed', False)
     rank = params.get('distributed_rank', 0)
-    if distributed and rank != 0:
-        logging.info("Rank %d skips inference; only master runs inference mode.", rank)
-        return
+    world_size = params.get('distributed_world_size', 1)
+    
     model.load_weights(model.checkpoint)
     
     data_dir = os.path.join(params['data_root'], params['dataset_id'])
@@ -86,13 +85,18 @@ def run_inference(model, feature_map, params, args):
 
     # Output directory setup (Parquet format for Big Data)
     output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
-    if os.path.exists(output_dir):
-        import shutil
-        shutil.rmtree(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
+    if rank == 0:
+        if os.path.exists(output_dir):
+            import shutil
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
 
-    logging.info('******** Start Inference ********')
-    logging.info(f"Results will be saved to directory: {output_dir}")
+    if distributed and dist.is_initialized():
+        distributed_barrier()
+    
+    if rank == 0:
+        logging.info('******** Start Inference ********')
+        logging.info(f"Results will be saved to directory: {output_dir}")
     
     import warnings
     from tqdm import tqdm
@@ -102,49 +106,114 @@ def run_inference(model, feature_map, params, args):
 
     has_data = False
 
-    for i, f in enumerate(tqdm(files, desc="Inference")):
-        logger.setLevel(logging.WARNING)
-        try:
-            # Inference files usually have no label; skip labels
-            ddf = feature_encoder.read_data(f, data_format=data_format, include_labels=False)
-            
-            # Extract IDs before preprocess (which filters columns)
-            ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()
-            
-            # Preprocess (handles sequence conversion) and Transform
-            df = feature_encoder.preprocess(ddf).collect().to_pandas()
-            df = feature_encoder.transform(df)
-            
-            test_gen = RankDataLoader(feature_map, stage='test', test_data=[df], batch_size=params['batch_size'], 
-                                    data_loader=DataFrameDataLoader).make_iterator()
-            
-            model._verbose = 0
-            current_batch_preds = model.predict(test_gen)
-            
-            if current_batch_preds is not None:
-                has_data = True
+    # Distribute files across ranks for parallel processing
+    rank_files = []
+    for i, f in enumerate(files):
+        if i % world_size == rank:
+            rank_files.append(f)
+    
+    if rank_files:
+        for i, f in enumerate(tqdm(rank_files, desc=f"Inference (Rank {rank})", disable=rank!=0)):
+            logger.setLevel(logging.WARNING)
+            try:
+                # Inference files usually have no label; skip labels
+                ddf = feature_encoder.read_data(f, data_format=data_format, include_labels=False)
                 
-                # Dict (Normal inference) or Array
-                pred_df = pd.DataFrame(current_batch_preds, columns=['pred'])
-                result_df = pd.concat([ids.reset_index(drop=True), pred_df.reset_index(drop=True)], axis=1)
+                # Extract IDs before preprocess (which filters columns)
+                ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()
+                
+                # Preprocess (handles sequence conversion) and Transform
+                df = feature_encoder.preprocess(ddf).collect().to_pandas()
+                df = feature_encoder.transform(df)
+                
+                # Pass num_workers and other params to RankDataLoader
+                # Use the same approach as in training: pass all params and let RankDataLoader handle them
+                # We need to ensure test_data is passed correctly
+                inference_params = params.copy()
+                inference_params['test_data'] = [df]
+                inference_params['data_loader'] = DataFrameDataLoader
+                # For inference, we don't need shuffle
+                inference_params['shuffle'] = False
+                test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
+                
+                model._verbose = 0
+                current_batch_preds = model.predict(test_gen)
+                
+                if current_batch_preds is not None:
+                    has_data = True
+                    
+                    # Dict (Normal inference) or Array
+                    pred_df = pd.DataFrame(current_batch_preds, columns=['pred'])
+                    result_df = pd.concat([ids.reset_index(drop=True), pred_df.reset_index(drop=True)], axis=1)
 
-                # Save as Parquet part file
-                part_file = os.path.join(output_dir, f"part_{i}.parquet")
-                result_df.to_parquet(part_file, index=False)
-            
-            model._verbose = params.get('verbose', 1)
-            
-            # Explicit garbage collection
-            del ddf, df, ids, current_batch_preds
-            gc.collect()
+                    # Save as Parquet part file with rank identifier
+                    part_file = os.path.join(output_dir, f"part_{i}_rank{rank}.parquet")
+                    result_df.to_parquet(part_file, index=False)
+                
+                model._verbose = params.get('verbose', 1)
+                
+                # Explicit garbage collection
+                del ddf, df, ids, current_batch_preds
+                gc.collect()
 
-        finally:
-            logger.setLevel(original_level)
+            finally:
+                logger.setLevel(original_level)
+    
+    if distributed and dist.is_initialized():
+        distributed_barrier()
+    
+    if rank == 0:
+        if has_data:
+            logging.info(f"Inference completed. Data saved in: {output_dir}")
+            # Merge all rank files if distributed
+            if distributed and world_size > 1:
+                try:
+                    merge_distributed_results(output_dir, world_size)
+                except Exception as e:
+                    logging.warning(f"Failed to merge distributed results: {e}")
+        else:
+            logging.warning("No data found in infer_data!")
 
-    if has_data:
-        logging.info(f"Inference completed. Data saved in: {output_dir}")
-    else:
-        logging.warning("No data found in infer_data!")
+
+def merge_distributed_results(output_dir, world_size):
+    """Merge parquet files from all ranks into single files."""
+    import pandas as pd
+    import glob
+    
+    # Find all part files
+    part_files = glob.glob(os.path.join(output_dir, "part_*_rank*.parquet"))
+    if not part_files:
+        return
+    
+    # Group by part number (without rank)
+    part_groups = {}
+    for f in part_files:
+        basename = os.path.basename(f)
+        # Extract part number (e.g., "part_0" from "part_0_rank0.parquet")
+        import re
+        match = re.match(r'part_(\d+)_rank\d+\.parquet', basename)
+        if match:
+            part_num = int(match.group(1))
+            if part_num not in part_groups:
+                part_groups[part_num] = []
+            part_groups[part_num].append(f)
+    
+    # Merge each group
+    for part_num, files in sorted(part_groups.items()):
+        dfs = []
+        for f in sorted(files):
+            try:
+                df = pd.read_parquet(f)
+                dfs.append(df)
+                os.remove(f)  # Remove individual rank file
+            except Exception as e:
+                logging.warning(f"Failed to read or remove {f}: {e}")
+        
+        if dfs:
+            merged_df = pd.concat(dfs, ignore_index=True)
+            merged_file = os.path.join(output_dir, f"part_{part_num}.parquet")
+            merged_df.to_parquet(merged_file, index=False)
+            logging.info(f"Merged {len(files)} rank files into {merged_file}")
 
 
 if __name__ == '__main__':
