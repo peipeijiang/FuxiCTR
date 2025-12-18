@@ -292,8 +292,8 @@ def _aggregate_process_usage(pid):
 
 
 def _aggregate_gpu_usage(pids):
-    """Return (util%, bytes) summed across all GPUs touched by given pids.
-    If no specific process matches, return total GPU utilization across all devices."""
+    """Return list of (util%, bytes) for each GPU touched by given pids.
+    Returns (gpu_utils, gpu_mems) where each is a list of values per GPU."""
     try:
         import pynvml
     except ImportError:
@@ -312,13 +312,20 @@ def _aggregate_gpu_usage(pids):
     except Exception:
         return None, None
 
-    total_util = 0.0
-    total_mem = 0
-    matched_any = False
     try:
         device_count = pynvml.nvmlDeviceGetCount()
     except pynvml.NVMLError:
         return None, None
+
+    gpu_utils = []
+    gpu_mems = []
+    
+    # Initialize lists for each GPU
+    for idx in range(device_count):
+        gpu_utils.append(0.0)
+        gpu_mems.append(0)
+
+    matched_any = False
 
     # First try to match specific processes
     if pids:
@@ -360,10 +367,10 @@ def _aggregate_gpu_usage(pids):
                     util = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
                 except pynvml.NVMLError:
                     util = 0.0
-                total_util += util
-                total_mem += device_mem
+                gpu_utils[idx] = util
+                gpu_mems[idx] = device_mem
     
-    # If no specific process matched, return total GPU utilization across all devices
+    # If no specific process matched, return total GPU utilization for each device
     # This is useful for distributed training where child processes might not be detected
     if not matched_any:
         for idx in range(device_count):
@@ -371,8 +378,8 @@ def _aggregate_gpu_usage(pids):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
                 util = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
                 mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                total_util += util
-                total_mem += mem_info.used
+                gpu_utils[idx] = util
+                gpu_mems[idx] = mem_info.used
                 matched_any = True
             except pynvml.NVMLError:
                 continue
@@ -380,10 +387,9 @@ def _aggregate_gpu_usage(pids):
     if not matched_any:
         return None, None
     
-    # Normalize utilization to percentage (already in percentage)
     # Round to 1 decimal place for display
-    total_util = round(total_util, 1)
-    return total_util, total_mem
+    gpu_utils = [round(util, 1) for util in gpu_utils]
+    return gpu_utils, gpu_mems
 
 # --- Run History Helpers ---
 def _history_path(username):
@@ -435,6 +441,21 @@ def update_history_record(username, pid, status, exit_code=None, message=None):
             break
     if updated:
         save_history(username, history)
+
+def delete_history_record(username, pid):
+    """删除指定PID的历史记录"""
+    history = load_history(username)
+    # 过滤掉指定PID的记录
+    new_history = [item for item in history if item.get('pid') != pid]
+    if len(new_history) != len(history):
+        save_history(username, new_history)
+        return True
+    return False
+
+def delete_all_history(username):
+    """删除用户的所有历史记录"""
+    save_history(username, [])
+    return True
 
 def format_duration(seconds):
     if seconds is None:
@@ -946,18 +967,25 @@ if selected_model:
                         cpu_usage = "N/A"
                         mem_usage = "N/A"
                         gpu_usage = "—"
-                        cpu_total, mem_total, gpu_util, gpu_mem = _aggregate_process_usage(t['pid'])
+                        cpu_total, mem_total, gpu_utils, gpu_mems = _aggregate_process_usage(t['pid'])
                         if cpu_total is not None:
                             cpu_usage = f"{cpu_total:.1f}%"
                         if mem_total is not None:
                             mem_usage = f"{mem_total / (1024 * 1024):.0f} MB"
-                        gpu_parts = []
-                        if gpu_util is not None:
-                            gpu_parts.append(f"{gpu_util:.0f}%")
-                        if gpu_mem is not None:
-                            gpu_parts.append(f"{gpu_mem / (1024 * 1024):.0f} MB")
-                        if gpu_parts:
-                            gpu_usage = " / ".join(gpu_parts)
+                        
+                        # 显示每个GPU的占用，用/隔开
+                        if gpu_utils is not None and gpu_mems is not None:
+                            gpu_parts = []
+                            for i, (util, mem) in enumerate(zip(gpu_utils, gpu_mems)):
+                                if util > 0 or mem > 0:  # 只显示有占用的GPU
+                                    util_str = f"{util:.0f}%" if util > 0 else "0%"
+                                    mem_str = f"{mem / (1024 * 1024):.0f}MB" if mem > 0 else "0MB"
+                                    gpu_parts.append(f"GPU{i}:{util_str}/{mem_str}")
+                            
+                            if gpu_parts:
+                                gpu_usage = " / ".join(gpu_parts)
+                            else:
+                                gpu_usage = "—"
 
                         task_data.append({
                             "用户": t['username'],
@@ -1736,36 +1764,83 @@ if selected_model:
 
     with tab5:
         st.header("🗂️ 历史运行记录")
-        st.caption("此处仅展示当前左侧所选用户的运行记录，切换侧边栏用户名即可查看自己的历史。")
+        st.caption("此处仅展示当前左侧所选用户的运行记录，切换侧边栏用户名即可查看自己的历史。每条记录支持删除。")
 
         target_user = current_user
         user_history = load_history(target_user)
+        
+        # 添加批量删除功能
         if user_history:
-            detail_rows = []
-            now_ts = time.time()
-            for rec in user_history[:100]:
-                start_ts = rec.get('start_time')
-                start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_ts)) if start_ts else "-"
-                duration_val = rec.get('duration')
-                if rec.get('status') == 'running' and start_ts:
-                    duration_val = now_ts - start_ts
-                gpu_val = rec.get('gpu')
-                if gpu_val in (None, -1, "-1"):
-                    gpu_display = 'CPU'
-                else:
-                    gpu_display = str(gpu_val)
-                success_flag = rec.get('success')
-                success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
-                detail_rows.append({
-                    "开始时间": start_str,
-                    "模型": rec.get('model', '-') or '-',
-                    "实验": rec.get('expid', '-') or '-',
-                    "模式": rec.get('mode', '-') or '-',
-                    "GPU": gpu_display,
-                    "时长": format_duration(duration_val),
-                    "状态": rec.get('status', '-') or '-',
-                    "成功": success_display
-                })
-            st.dataframe(detail_rows, use_container_width=True, hide_index=True)
+            col_del1, col_del2 = st.columns([3, 1])
+            with col_del1:
+                st.markdown("**操作**：")
+            with col_del2:
+                if st.button("🗑️ 删除所有历史记录", type="secondary", use_container_width=True):
+                    if delete_all_history(target_user):
+                        st.toast("已删除所有历史记录！", icon="✅")
+                        st.rerun()
+        
+        if user_history:
+            # 使用st.columns创建更灵活的布局
+            for i, rec in enumerate(user_history[:100]):
+                with st.container():
+                    col1, col2, col3 = st.columns([6, 1, 1])
+                    
+                    with col1:
+                        # 显示记录详情
+                        start_ts = rec.get('start_time')
+                        start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_ts)) if start_ts else "-"
+                        duration_val = rec.get('duration')
+                        now_ts = time.time()
+                        if rec.get('status') == 'running' and start_ts:
+                            duration_val = now_ts - start_ts
+                        
+                        gpu_val = rec.get('gpu')
+                        if gpu_val in (None, -1, "-1"):
+                            gpu_display = 'CPU'
+                        else:
+                            gpu_display = str(gpu_val)
+                        
+                        success_flag = rec.get('success')
+                        success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
+                        
+                        # 创建详细信息字符串
+                        details = f"""
+                        **开始时间**: {start_str}  
+                        **模型**: {rec.get('model', '-')}  
+                        **实验**: {rec.get('expid', '-')}  
+                        **模式**: {rec.get('mode', '-')}  
+                        **GPU**: {gpu_display}  
+                        **时长**: {format_duration(duration_val)}  
+                        **状态**: {rec.get('status', '-')}  
+                        **成功**: {success_display}  
+                        **PID**: {rec.get('pid', '-')}
+                        """
+                        
+                        if rec.get('logfile') and os.path.exists(rec.get('logfile')):
+                            details += f"\n**日志文件**: `{rec.get('logfile')}`"
+                        
+                        if rec.get('message'):
+                            details += f"\n**消息**: {rec.get('message')}"
+                        
+                        st.markdown(details)
+                    
+                    with col2:
+                        # 查看日志按钮
+                        if rec.get('logfile') and os.path.exists(rec.get('logfile')):
+                            if st.button("📄 日志", key=f"view_log_{i}", help="查看日志文件"):
+                                with open(rec.get('logfile'), "r") as f:
+                                    log_content = f.read()
+                                st.code(log_content, language="text")
+                    
+                    with col3:
+                        # 删除按钮
+                        pid = rec.get('pid')
+                        if pid and st.button("🗑️", key=f"delete_{i}", help="删除此记录"):
+                            if delete_history_record(target_user, pid):
+                                st.toast(f"已删除记录 PID: {pid}", icon="✅")
+                                st.rerun()
+                    
+                    st.markdown("---")
         else:
             st.info(f"用户 {target_user} 暂无历史记录")
