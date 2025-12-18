@@ -105,7 +105,8 @@ def run_inference(model, feature_map, params, args):
     for i, f in enumerate(tqdm(files, desc="Inference")):
         logger.setLevel(logging.WARNING)
         try:
-            ddf = feature_encoder.read_data(f, data_format=data_format)
+            # Inference files usually have no label; skip labels
+            ddf = feature_encoder.read_data(f, data_format=data_format, include_labels=False)
             
             # Extract IDs before preprocess (which filters columns)
             ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()

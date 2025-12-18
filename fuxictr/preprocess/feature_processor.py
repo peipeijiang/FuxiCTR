@@ -70,7 +70,8 @@ class FeatureProcessor(object):
                 full_feature_cols.append(col)
         return full_feature_cols
 
-    def read_data(self, data_path, data_format="csv", sep=",", n_rows=None, **kwargs):
+    def read_data(self, data_path, data_format="csv", sep=",", n_rows=None,
+                 include_labels=True, **kwargs):
         if data_path is None:
             raise ValueError("data_path cannot be None")
         if not data_path.endswith(data_format):
@@ -79,20 +80,30 @@ class FeatureProcessor(object):
         file_names = sorted(glob.glob(data_path))
         assert len(file_names) > 0, f"Invalid data path: {data_path}"
         
-        use_cols = list(self.dtype_dict.keys())
+        feature_cols = [c["name"] for c in self.feature_cols]
+        label_cols = self.feature_map.labels if include_labels else []
+        use_cols = feature_cols + label_cols
         if self.feature_map.group_id is not None and self.feature_map.group_id not in use_cols:
             use_cols.append(self.feature_map.group_id)
+        dtypes_map = {k: v for k, v in self.dtype_dict.items() if k in use_cols}
+
+        def _select_cols(lf):
+            schema_cols = set(lf.collect_schema().names())
+            missing = [c for c in use_cols if c not in schema_cols]
+            if missing:
+                raise ValueError(f"Columns {missing} not found in data files.")
+            return lf.select(use_cols)
 
         if data_format == "csv":
             dfs = [
-                pl.scan_csv(source=file_name, separator=sep, dtypes=self.dtype_dict,
-                            low_memory=False, n_rows=n_rows).select(use_cols)
+                _select_cols(pl.scan_csv(source=file_name, separator=sep, dtypes=dtypes_map,
+                                         low_memory=False, n_rows=n_rows))
                 for file_name in file_names
             ]
             ddf = pl.concat(dfs)
         elif data_format == "parquet":
             dfs = [
-                pl.scan_parquet(source=file_name, low_memory=False, n_rows=n_rows).select(use_cols)
+                _select_cols(pl.scan_parquet(source=file_name, low_memory=False, n_rows=n_rows))
                 for file_name in file_names
             ]
             ddf = pl.concat(dfs)
