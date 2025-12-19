@@ -107,25 +107,29 @@ def run_inference(model, feature_map, params, args):
     has_data = False
 
     # Distribute files across ranks for parallel processing
+    # Create mapping of file to its original index
     rank_files = []
+    file_indices = []  # Store original indices
     for i, f in enumerate(files):
         if i % world_size == rank:
             rank_files.append(f)
-    
+            file_indices.append(i)  # Save original index
+
     if rank_files:
-        for i, f in enumerate(tqdm(rank_files, desc=f"Inference (Rank {rank})", disable=rank!=0)):
+        # Use zip to iterate with both file and original index
+        for file_idx, f in zip(file_indices, tqdm(rank_files, desc=f"Inference (Rank {rank})", disable=rank!=0)):
             logger.setLevel(logging.WARNING)
             try:
                 # Inference files usually have no label; skip labels
                 ddf = feature_encoder.read_data(f, data_format=data_format, include_labels=False)
-                
+
                 # Extract IDs before preprocess (which filters columns)
                 ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()
-                
+
                 # Preprocess (handles sequence conversion) and Transform
                 df = feature_encoder.preprocess(ddf).collect().to_pandas()
                 df = feature_encoder.transform(df)
-                
+
                 # Pass num_workers and other params to RankDataLoader
                 # Use the same approach as in training: pass all params and let RankDataLoader handle them
                 # We need to ensure test_data is passed correctly
@@ -135,19 +139,20 @@ def run_inference(model, feature_map, params, args):
                 # For inference, we don't need shuffle
                 inference_params['shuffle'] = False
                 test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
-                
+
                 model._verbose = 0
                 current_batch_preds = model.predict(test_gen)
-                
+
                 if current_batch_preds is not None:
                     has_data = True
-                    
+
                     # Dict (Normal inference) or Array
                     pred_df = pd.DataFrame(current_batch_preds, columns=['pred'])
                     result_df = pd.concat([ids.reset_index(drop=True), pred_df.reset_index(drop=True)], axis=1)
 
                     # Save as Parquet part file with rank identifier
-                    part_file = os.path.join(output_dir, f"part_{i}_rank{rank}.parquet")
+                    # Use original file index instead of rank_files index
+                    part_file = os.path.join(output_dir, f"part_{file_idx}_rank{rank}.parquet")
                     result_df.to_parquet(part_file, index=False)
                 
                 model._verbose = params.get('verbose', 1)
