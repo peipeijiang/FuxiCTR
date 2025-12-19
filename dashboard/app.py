@@ -1207,7 +1207,42 @@ if selected_model:
                     except Exception as e:
                         logging.warning(f"清理进程时出错: {e}")
                     
-                    # 5. 清理GPU内存
+                    # 5. 清理锁文件（防止再次运行时报错）
+                    try:
+                        # 查找并删除可能的锁文件
+                        import glob
+                        # 查找当前用户可能创建的锁文件
+                        lock_patterns = [
+                            f"**/{current_user}_*.lock",
+                            f"**/.inference_lock",
+                            f"**/*.lock"
+                        ]
+                        
+                        for pattern in lock_patterns:
+                            for lock_file in glob.glob(pattern, recursive=True):
+                                try:
+                                    # 检查锁文件是否属于当前用户
+                                    if os.path.exists(lock_file):
+                                        # 读取锁文件内容，检查PID
+                                        with open(lock_file, 'r') as f:
+                                            content = f.read()
+                                            if 'PID:' in content:
+                                                import re
+                                                match = re.search(r'PID:\s*(\d+)', content)
+                                                if match:
+                                                    lock_pid = int(match.group(1))
+                                                    # 如果锁文件中的PID是当前进程或子进程，删除它
+                                                    if lock_pid == pid or lock_pid in [child.pid for child in psutil.Process(pid).children(recursive=True)]:
+                                                        os.remove(lock_file)
+                                                        logging.info(f"已删除锁文件: {lock_file}")
+                                    else:
+                                        os.remove(lock_file)
+                                except Exception as e:
+                                    logging.warning(f"删除锁文件 {lock_file} 时出错: {e}")
+                    except Exception as e:
+                        logging.warning(f"清理锁文件时出错: {e}")
+                    
+                    # 6. 清理GPU内存
                     try:
                         import torch
                         if torch.cuda.is_available():

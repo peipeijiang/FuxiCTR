@@ -134,20 +134,42 @@ def run_inference(model, feature_map, params, args):
             try:
                 # Check if another inference is already running
                 if os.path.exists(lock_file):
-                    # Check if lock is stale (older than 1 hour)
+                    # Check if lock is stale (older than 5 minutes)
                     lock_age = time.time() - os.path.getmtime(lock_file)
-                    if lock_age > 3600:  # 1 hour
+                    if lock_age > 300:  # 5 minutes (降低阈值，便于快速恢复)
                         logging.warning(f"Removing stale lock file (age: {lock_age:.0f}s)")
                         os.remove(lock_file)
                     else:
-                        raise RuntimeError(f"Inference already running (lock file: {lock_file}, age: {lock_age:.0f}s)")
+                        # 检查锁文件中的PID是否还在运行
+                        try:
+                            with open(lock_file, 'r') as f:
+                                content = f.read()
+                                if 'PID:' in content:
+                                    import re
+                                    match = re.search(r'PID:\s*(\d+)', content)
+                                    if match:
+                                        pid = int(match.group(1))
+                                        # 检查进程是否存在
+                                        try:
+                                            os.kill(pid, 0)  # 检查进程是否存在
+                                            # 进程还在运行
+                                            raise RuntimeError(f"Inference already running (PID: {pid}, lock file: {lock_file}, age: {lock_age:.0f}s)")
+                                        except OSError:
+                                            # 进程已结束，删除锁文件
+                                            logging.warning(f"Process {pid} not found, removing stale lock file")
+                                            os.remove(lock_file)
+                        except Exception as e:
+                            logging.warning(f"Error checking lock file: {e}, removing it")
+                            os.remove(lock_file)
+                        else:
+                            raise RuntimeError(f"Inference already running (lock file: {lock_file}, age: {lock_age:.0f}s)")
                 
                 if os.path.exists(output_dir):
                     # First remove all files
-                    for root, dirs, files in os.walk(output_dir):
-                        for f in files:
+                    for root, dirs, walk_files in os.walk(output_dir):
+                        for file_to_remove in walk_files:
                             try:
-                                os.remove(os.path.join(root, f))
+                                os.remove(os.path.join(root, file_to_remove))
                             except:
                                 pass
                     # Then remove directory
@@ -205,6 +227,13 @@ def run_inference(model, feature_map, params, args):
     # Create mapping of file to its original index
     rank_files = []
     file_indices = []  # Store original indices
+    
+    # Debug: check what's in files list
+    if rank == 0 and len(files) > 0:
+        logging.info(f"DEBUG: First 3 files in 'files' list:")
+        for i, f in enumerate(files[:3]):
+            logging.info(f"  files[{i}]: {os.path.basename(f)} (full: {f})")
+    
     for i, f in enumerate(files):
         if i % world_size == rank:
             rank_files.append(f)
@@ -218,7 +247,9 @@ def run_inference(model, feature_map, params, args):
         logging.info(f"Rank {rank} will process files:")
         for idx, f in zip(file_indices[:5], rank_files[:5]):  # Show first 5
             basename = os.path.basename(f)
+            full_path = f
             logging.info(f"  Index {idx}: {basename} -> will be saved as part_{idx}_rank{rank}.parquet")
+            logging.info(f"    Full path: {full_path}")
         if len(rank_files) > 5:
             logging.info(f"  ... and {len(rank_files) - 5} more files")
 
@@ -245,6 +276,10 @@ def run_inference(model, feature_map, params, args):
                 inference_params['data_loader'] = DataFrameDataLoader
                 # For inference, we don't need shuffle
                 inference_params['shuffle'] = False
+                # Ensure num_workers is passed (DataFrameDataLoader defaults to 0)
+                if 'num_workers' not in inference_params:
+                    inference_params['num_workers'] = params.get('num_workers', 1)
+                logging.info(f"Rank {rank}: Using num_workers={inference_params.get('num_workers')} for DataFrameDataLoader")
                 test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
 
                 model._verbose = 0
