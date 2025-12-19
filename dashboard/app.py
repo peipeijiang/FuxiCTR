@@ -1289,20 +1289,40 @@ if selected_model:
             else:
                 st.caption(f"当前设备：{gpu_map.get(selected_devices[0], selected_devices[0])}")
             st.caption(f"MKL 线程层自动设置为 {mkl_threading_layer}，以匹配当前设备。")
+            
+            # 保存到session state以便后续使用
+            st.session_state["_use_distributed"] = use_distributed
+            st.session_state["_device_summary"] = device_summary
+            st.session_state["_mkl_threading_layer"] = mkl_threading_layer
+            st.session_state["_device_list"] = selected_devices[:]
         with col_p3:
             num_workers = st.number_input("Num Workers", min_value=1, max_value=16, value=3, help="数据加载线程数")
+            # 保存到session state
+            st.session_state["_num_workers"] = num_workers
 
-        device_list = selected_devices[:]  # snapshot for command builders
-        device_meta_value = device_summary
-        multi_gpu_enabled = use_distributed
+        # 从session state获取值，如果不存在则使用当前值
+        device_list = st.session_state.get("_device_list", selected_devices[:])
+        device_meta_value = st.session_state.get("_device_summary", device_summary)
+        multi_gpu_enabled = st.session_state.get("_use_distributed", use_distributed)
+        current_mkl_threading_layer = st.session_state.get("_mkl_threading_layer", mkl_threading_layer)
+        current_num_workers = st.session_state.get("_num_workers", num_workers)
 
         def build_run_command(run_mode):
-            if multi_gpu_enabled:
+            # 从session state获取最新值
+            device_list = st.session_state.get("_device_list", [])
+            multi_gpu_enabled = st.session_state.get("_use_distributed", False)
+            # 获取当前的expid，需要从外部作用域获取
+            current_expid = expid
+            
+            if not device_list:
+                device_list = [gpu_opts[0]] if gpu_opts else [-1]
+            
+            if multi_gpu_enabled and len(device_list) > 1:
                 cuda_visible = ",".join(str(d) for d in device_list)
                 nproc = len(device_list)
                 torchrun_prefix = f"CUDA_VISIBLE_DEVICES={cuda_visible} torchrun --standalone --nnodes=1 --nproc_per_node={nproc}"
-                return f"cd {model_path} && {torchrun_prefix} run_expid.py --distributed --expid {expid} --mode {run_mode}"
-            return f"cd {model_path} && python run_expid.py --expid {expid} --gpu {device_list[0]} --mode {run_mode}"
+                return f"cd {model_path} && {torchrun_prefix} run_expid.py --distributed --expid {current_expid} --mode {run_mode}"
+            return f"cd {model_path} && python run_expid.py --expid {current_expid} --gpu {device_list[0]} --mode {run_mode}"
 
         st.markdown("#### 操作")
         
