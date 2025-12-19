@@ -78,10 +78,30 @@ def run_inference(model, feature_map, params, args):
 
     infer_data = params['infer_data']
     if os.path.isdir(infer_data):
-        files = sorted(glob.glob(os.path.join(infer_data, "*.parquet"))) or sorted(glob.glob(os.path.join(infer_data, "*.csv")))
+        # Get all parquet files
+        parquet_files = glob.glob(os.path.join(infer_data, "*.parquet"))
+        csv_files = glob.glob(os.path.join(infer_data, "*.csv"))
+        
+        # Sort files by numeric order (extract number from filename)
+        def extract_number(filename):
+            import re
+            # Extract number from filename like "part_123.parquet" or "data_456.csv"
+            basename = os.path.basename(filename)
+            match = re.search(r'(\d+)', basename)
+            return int(match.group(1)) if match else 0
+        
+        if parquet_files:
+            files = sorted(parquet_files, key=extract_number)
+            data_format = 'parquet'
+        elif csv_files:
+            files = sorted(csv_files, key=extract_number)
+            data_format = 'csv'
+        else:
+            files = []
+            data_format = 'parquet'  # default
     else:
         files = [infer_data]
-    data_format = 'parquet' if files[0].endswith('.parquet') else 'csv'
+        data_format = 'parquet' if infer_data.endswith('.parquet') else 'csv'
 
     # Output directory setup (Parquet format for Big Data)
     output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
