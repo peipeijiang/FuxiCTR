@@ -82,6 +82,13 @@ def run_inference(model, feature_map, params, args):
         parquet_files = glob.glob(os.path.join(infer_data, "*.parquet"))
         csv_files = glob.glob(os.path.join(infer_data, "*.csv"))
         
+        # Debug: log what files were found
+        if rank == 0:
+            logging.info(f"Found {len(parquet_files)} parquet files, {len(csv_files)} csv files in {infer_data}")
+            if parquet_files:
+                logging.info(f"First 5 parquet files: {[os.path.basename(f) for f in parquet_files[:5]]}")
+                logging.info(f"Last 5 parquet files: {[os.path.basename(f) for f in parquet_files[-5:]]}")
+        
         # Sort files by numeric order (extract number from filename)
         def extract_number(filename):
             import re
@@ -93,31 +100,68 @@ def run_inference(model, feature_map, params, args):
         if parquet_files:
             files = sorted(parquet_files, key=extract_number)
             data_format = 'parquet'
+            # Debug: log sorted order
+            if rank == 0:
+                logging.info(f"Sorted files (first 10):")
+                for i, f in enumerate(files[:10]):
+                    num = extract_number(f)
+                    logging.info(f"  [{i}] {os.path.basename(f)} -> index: {i}, number: {num}")
         elif csv_files:
             files = sorted(csv_files, key=extract_number)
             data_format = 'csv'
         else:
             files = []
             data_format = 'parquet'  # default
+            if rank == 0:
+                logging.warning(f"No parquet or csv files found in {infer_data}")
     else:
         files = [infer_data]
         data_format = 'parquet' if infer_data.endswith('.parquet') else 'csv'
+        if rank == 0:
+            logging.info(f"Single file inference: {infer_data}")
 
     # Output directory setup (Parquet format for Big Data)
     output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
     
+    # Add lock file to prevent multiple inference processes
+    lock_file = os.path.join(output_dir, ".inference_lock")
+    
     # Clean output directory more thoroughly
     if rank == 0:
         import time
-        max_retries = 3
+        max_retries = 5
         for retry in range(max_retries):
             try:
+                # Check if another inference is already running
+                if os.path.exists(lock_file):
+                    # Check if lock is stale (older than 1 hour)
+                    lock_age = time.time() - os.path.getmtime(lock_file)
+                    if lock_age > 3600:  # 1 hour
+                        logging.warning(f"Removing stale lock file (age: {lock_age:.0f}s)")
+                        os.remove(lock_file)
+                    else:
+                        raise RuntimeError(f"Inference already running (lock file: {lock_file}, age: {lock_age:.0f}s)")
+                
                 if os.path.exists(output_dir):
+                    # First remove all files
+                    for root, dirs, files in os.walk(output_dir):
+                        for f in files:
+                            try:
+                                os.remove(os.path.join(root, f))
+                            except:
+                                pass
+                    # Then remove directory
                     import shutil
                     shutil.rmtree(output_dir)
-                    time.sleep(1)  # Wait for filesystem
+                    time.sleep(2)  # Wait for filesystem
                 
+                # Create fresh directory
                 os.makedirs(output_dir, exist_ok=True)
+                
+                # Create lock file
+                with open(lock_file, 'w') as f:
+                    f.write(f"PID: {os.getpid()}, Time: {time.time()}")
+                
                 break
             except Exception as e:
                 if retry == max_retries - 1:
@@ -125,14 +169,14 @@ def run_inference(model, feature_map, params, args):
                     raise
                 else:
                     logging.warning(f"Retry {retry + 1}/{max_retries} cleaning output directory: {e}")
-                    time.sleep(2)
+                    time.sleep(3)
     
     if distributed and dist.is_initialized():
         distributed_barrier()
         
         # Double-check all ranks see the clean directory
         if rank == 0:
-            logging.info(f"Output directory cleaned: {output_dir}")
+            logging.info(f"Output directory cleaned and locked: {output_dir}")
     
     if rank == 0:
         logging.info('******** Start Inference ********')
@@ -168,6 +212,15 @@ def run_inference(model, feature_map, params, args):
     
     # Log distribution for debugging
     logging.info(f"Rank {rank}: Processing {len(rank_files)} files (indices: {file_indices})")
+    
+    # Debug: show which files will be processed
+    if rank == 0 and rank_files:
+        logging.info(f"Rank {rank} will process files:")
+        for idx, f in zip(file_indices[:5], rank_files[:5]):  # Show first 5
+            basename = os.path.basename(f)
+            logging.info(f"  Index {idx}: {basename} -> will be saved as part_{idx}_rank{rank}.parquet")
+        if len(rank_files) > 5:
+            logging.info(f"  ... and {len(rank_files) - 5} more files")
 
     if rank_files:
         # Use zip to iterate with both file and original index
@@ -232,6 +285,14 @@ def run_inference(model, feature_map, params, args):
                     logging.warning(f"Failed to merge distributed results: {e}")
         else:
             logging.warning("No data found in infer_data!")
+        
+        # Clean up lock file
+        try:
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+                logging.info(f"Lock file removed: {lock_file}")
+        except Exception as e:
+            logging.warning(f"Failed to remove lock file: {e}")
 
 
 def merge_distributed_results(output_dir, world_size):
