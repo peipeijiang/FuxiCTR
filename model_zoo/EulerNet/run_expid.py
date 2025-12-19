@@ -279,7 +279,12 @@ def run_inference(model, feature_map, params, args):
                 # Ensure num_workers is passed (DataFrameDataLoader defaults to 0)
                 if 'num_workers' not in inference_params:
                     inference_params['num_workers'] = params.get('num_workers', 1)
+                # 强制打印num_workers信息，确保用户能看到
+                logging.info(f"=== DEBUG: Rank {rank} inference parameters ===")
+                logging.info(f"Rank {rank}: num_workers from params: {params.get('num_workers')}")
+                logging.info(f"Rank {rank}: num_workers in inference_params: {inference_params.get('num_workers')}")
                 logging.info(f"Rank {rank}: Using num_workers={inference_params.get('num_workers')} for DataFrameDataLoader")
+                logging.info(f"=== DEBUG: End ===")
                 test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
 
                 model._verbose = 0
