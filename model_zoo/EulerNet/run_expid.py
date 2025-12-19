@@ -126,12 +126,14 @@ def run_inference(model, feature_map, params, args):
     # Add lock file to prevent multiple inference processes
     lock_file = os.path.join(output_dir, ".inference_lock")
     
-    # Clean output directory more thoroughly
-    if rank == 0:
-        import time
-        max_retries = 5
-        for retry in range(max_retries):
-            try:
+    # Clean output directory more thoroughly - ALL ranks participate
+    import time
+    max_retries = 5
+    
+    for retry in range(max_retries):
+        try:
+            # Only rank 0 handles lock file and directory creation
+            if rank == 0:
                 # Check if another inference is already running
                 if os.path.exists(lock_file):
                     # Check if lock is stale (older than 5 minutes)
@@ -183,22 +185,39 @@ def run_inference(model, feature_map, params, args):
                 # Create lock file
                 with open(lock_file, 'w') as f:
                     f.write(f"PID: {os.getpid()}, Time: {time.time()}")
-                
-                break
-            except Exception as e:
-                if retry == max_retries - 1:
-                    logging.error(f"Failed to clean output directory after {max_retries} retries: {e}")
-                    raise
-                else:
+            
+            # ALL ranks wait for directory to be created
+            if distributed and dist.is_initialized():
+                distributed_barrier()
+            
+            # Double-check directory exists for all ranks
+            if not os.path.exists(output_dir):
+                # Try to create it if it doesn't exist (should only happen if rank 0 failed)
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                except:
+                    pass
+            
+            # Verify directory exists
+            if not os.path.exists(output_dir):
+                raise RuntimeError(f"Output directory does not exist: {output_dir}")
+            
+            if rank == 0:
+                logging.info(f"Output directory cleaned and locked: {output_dir}")
+            
+            break
+        except Exception as e:
+            if retry == max_retries - 1:
+                logging.error(f"Failed to clean output directory after {max_retries} retries: {e}")
+                raise
+            else:
+                if rank == 0:
                     logging.warning(f"Retry {retry + 1}/{max_retries} cleaning output directory: {e}")
-                    time.sleep(3)
+                time.sleep(3)
     
+    # Final barrier to ensure all ranks are ready
     if distributed and dist.is_initialized():
         distributed_barrier()
-        
-        # Double-check all ranks see the clean directory
-        if rank == 0:
-            logging.info(f"Output directory cleaned and locked: {output_dir}")
     
     if rank == 0:
         logging.info('******** Start Inference ********')
