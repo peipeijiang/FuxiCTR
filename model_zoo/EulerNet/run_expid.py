@@ -105,18 +105,44 @@ def run_inference(model, feature_map, params, args):
 
     # Output directory setup (Parquet format for Big Data)
     output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
+    
+    # Clean output directory more thoroughly
     if rank == 0:
-        if os.path.exists(output_dir):
-            import shutil
-            shutil.rmtree(output_dir)
-        os.makedirs(output_dir, exist_ok=True)
-
+        import time
+        max_retries = 3
+        for retry in range(max_retries):
+            try:
+                if os.path.exists(output_dir):
+                    import shutil
+                    shutil.rmtree(output_dir)
+                    time.sleep(1)  # Wait for filesystem
+                
+                os.makedirs(output_dir, exist_ok=True)
+                break
+            except Exception as e:
+                if retry == max_retries - 1:
+                    logging.error(f"Failed to clean output directory after {max_retries} retries: {e}")
+                    raise
+                else:
+                    logging.warning(f"Retry {retry + 1}/{max_retries} cleaning output directory: {e}")
+                    time.sleep(2)
+    
     if distributed and dist.is_initialized():
         distributed_barrier()
+        
+        # Double-check all ranks see the clean directory
+        if rank == 0:
+            logging.info(f"Output directory cleaned: {output_dir}")
     
     if rank == 0:
         logging.info('******** Start Inference ********')
         logging.info(f"Results will be saved to directory: {output_dir}")
+        # Debug: list files in output directory to ensure it's clean
+        existing_files = glob.glob(os.path.join(output_dir, "*.parquet"))
+        if existing_files:
+            logging.warning(f"WARNING: Output directory not clean! Found {len(existing_files)} existing files")
+            for f in existing_files[:5]:  # Show first 5 files
+                logging.warning(f"  Found: {os.path.basename(f)}")
     
     import warnings
     from tqdm import tqdm
@@ -126,6 +152,11 @@ def run_inference(model, feature_map, params, args):
 
     has_data = False
 
+    # Log file distribution info
+    if rank == 0:
+        logging.info(f"Total files to process: {len(files)}")
+        logging.info(f"World size: {world_size}, Rank: {rank}")
+    
     # Distribute files across ranks for parallel processing
     # Create mapping of file to its original index
     rank_files = []
@@ -134,6 +165,9 @@ def run_inference(model, feature_map, params, args):
         if i % world_size == rank:
             rank_files.append(f)
             file_indices.append(i)  # Save original index
+    
+    # Log distribution for debugging
+    logging.info(f"Rank {rank}: Processing {len(rank_files)} files (indices: {file_indices})")
 
     if rank_files:
         # Use zip to iterate with both file and original index
