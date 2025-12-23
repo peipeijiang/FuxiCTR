@@ -417,6 +417,36 @@ def append_history_record(username, record):
     history = history[:100]
     save_history(username, history)
 
+def _tail_text_file(path, max_bytes=20000, max_lines=200):
+    """Read the tail of a text file for quick preview."""
+    if not path or (not os.path.exists(path)):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(size - max_bytes, 0))
+            data = f.read().decode(errors="ignore").splitlines()
+            if len(data) > max_lines:
+                data = data[-max_lines:]
+            return "\n".join(data)
+    except Exception:
+        return ""
+
+def extract_latest_metrics(logfile):
+    """Extract the latest [Metrics] line from a log file for compact display."""
+    tail = _tail_text_file(logfile, max_bytes=20000, max_lines=400)
+    if not tail:
+        return "-"
+    for line in reversed(tail.splitlines()):
+        if "[Metrics]" in line:
+            import re
+            pairs = re.findall(r'([A-Za-z0-9_]+):\s*([0-9\\.]+)', line)
+            if pairs:
+                return " / ".join(f"{k}={v}" for k, v in pairs[:3])
+            return line.split("[Metrics]", 1)[-1].strip()
+    return "-"
+
 def update_history_record(username, pid, status, exit_code=None, message=None):
     history = load_history(username)
     updated = False
@@ -1836,66 +1866,48 @@ if selected_model:
                         st.rerun()
         
         if user_history:
-            # 使用st.columns创建更灵活的布局
             for i, rec in enumerate(user_history[:100]):
-                with st.container():
-                    col1, col2, col3 = st.columns([6, 1, 1])
-                    
-                    with col1:
-                        # 显示记录详情
-                        start_ts = rec.get('start_time')
-                        start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_ts)) if start_ts else "-"
-                        duration_val = rec.get('duration')
-                        now_ts = time.time()
-                        if rec.get('status') == 'running' and start_ts:
-                            duration_val = now_ts - start_ts
-                        
-                        gpu_val = rec.get('gpu')
-                        if gpu_val in (None, -1, "-1"):
-                            gpu_display = 'CPU'
-                        else:
-                            gpu_display = str(gpu_val)
-                        
-                        success_flag = rec.get('success')
-                        success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
-                        
-                        # 创建详细信息字符串
-                        details = f"""
-                        **开始时间**: {start_str}  
-                        **模型**: {rec.get('model', '-')}  
-                        **实验**: {rec.get('expid', '-')}  
-                        **模式**: {rec.get('mode', '-')}  
-                        **GPU**: {gpu_display}  
-                        **时长**: {format_duration(duration_val)}  
-                        **状态**: {rec.get('status', '-')}  
-                        **成功**: {success_display}  
-                        **PID**: {rec.get('pid', '-')}
-                        """
-                        
-                        if rec.get('logfile') and os.path.exists(rec.get('logfile')):
-                            details += f"\n**日志文件**: `{rec.get('logfile')}`"
-                        
-                        if rec.get('message'):
-                            details += f"\n**消息**: {rec.get('message')}"
-                        
-                        st.markdown(details)
-                    
-                    with col2:
-                        # 查看日志按钮
-                        if rec.get('logfile') and os.path.exists(rec.get('logfile')):
-                            if st.button("📄 日志", key=f"view_log_{i}", help="查看日志文件"):
-                                with open(rec.get('logfile'), "r") as f:
-                                    log_content = f.read()
-                                st.code(log_content, language="text")
-                    
-                    with col3:
-                        # 删除按钮
-                        pid = rec.get('pid')
-                        if pid and st.button("🗑️", key=f"delete_{i}", help="删除此记录"):
-                            if delete_history_record(target_user, pid):
-                                st.toast(f"已删除记录 PID: {pid}", icon="✅")
-                                st.rerun()
-                    
-                    st.markdown("---")
+                start_ts = rec.get('start_time')
+                start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_ts)) if start_ts else "-"
+                duration_val = rec.get('duration')
+                now_ts = time.time()
+                if rec.get('status') == 'running' and start_ts:
+                    duration_val = now_ts - start_ts
+                
+                gpu_val = rec.get('gpu')
+                if gpu_val in (None, -1, "-1"):
+                    gpu_display = 'CPU'
+                else:
+                    gpu_display = str(gpu_val)
+                
+                success_flag = rec.get('success')
+                success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
+                metrics_summary = extract_latest_metrics(rec.get('logfile'))
+                
+                # 单行摘要
+                summary = (
+                    f"{start_str} | {rec.get('model', '-')}/{rec.get('expid', '-')} "
+                    f"| {rec.get('mode', '-')} | GPU:{gpu_display} "
+                    f"| 时长:{format_duration(duration_val)} "
+                    f"| 状态:{rec.get('status', '-')} {success_display} "
+                    f"| 指标:{metrics_summary}"
+                )
+
+                col1, col2, col3 = st.columns([9, 1, 1], gap="small")
+                with col1:
+                    st.markdown(summary)
+                with col2:
+                    logfile = rec.get('logfile')
+                    if logfile and os.path.exists(logfile):
+                        if st.button("📄 日志", key=f"view_log_{i}", help="查看日志尾部"):
+                            log_tail = _tail_text_file(logfile, max_bytes=30000, max_lines=300)
+                            st.text_area("日志尾部 (最近)", value=log_tail or "未找到内容", height=240, key=f"log_area_{i}")
+                with col3:
+                    pid = rec.get('pid')
+                    if pid and st.button("🗑️", key=f"delete_{i}", help="删除此记录"):
+                        if delete_history_record(target_user, pid):
+                            st.toast(f"已删除记录 PID: {pid}", icon="✅")
+                            st.rerun()
+                st.markdown("---")
         else:
             st.info(f"用户 {target_user} 暂无历史记录")
