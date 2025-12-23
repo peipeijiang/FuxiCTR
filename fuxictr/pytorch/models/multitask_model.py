@@ -192,7 +192,7 @@ class MultiTaskModel(BaseModel):
             all_val_logs = self._broadcast_logs(all_val_logs)
             return all_val_logs
 
-    def predict(self, data_generator):
+    def predict(self, data_generator, gather_outputs=True):
         self.eval()  # set to evaluation mode
         with torch.no_grad():
             y_pred_all = defaultdict(list)
@@ -206,5 +206,7 @@ class MultiTaskModel(BaseModel):
                         return_dict["{}_pred".format(labels[i])].data.cpu().numpy().reshape(-1))
             for i in range(len(labels)):
                 y_pred = np.array(y_pred_all[labels[i]], np.float64)
-                y_pred_all[labels[i]] = self._gather_numpy(y_pred)
+                if gather_outputs:
+                    y_pred = self._gather_numpy(y_pred)
+                y_pred_all[labels[i]] = y_pred
         return y_pred_all

@@ -311,7 +311,7 @@ class BaseModel(nn.Module):
             val_logs = self._broadcast_logs(val_logs)
             return val_logs
 
-    def predict(self, data_generator):
+    def predict(self, data_generator, gather_outputs=True):
         self.eval()  # set to evaluation mode
         with torch.no_grad():
             y_pred = []
@@ -321,7 +321,8 @@ class BaseModel(nn.Module):
                 return_dict = self.forward(batch_data)
                 y_pred.extend(return_dict["y_pred"].data.cpu().numpy().reshape(-1))
             y_pred = np.array(y_pred, np.float64)
-            y_pred = self._gather_numpy(y_pred)
+            if gather_outputs:
+                y_pred = self._gather_numpy(y_pred)
             return y_pred
 
     def evaluate_metrics(self, y_true, y_pred, metrics, group_id=None, threshold=0.5):

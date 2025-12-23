@@ -307,7 +307,8 @@ def run_inference(model, feature_map, params, args):
                 test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
 
                 model._verbose = 0
-                current_batch_preds = model.predict(test_gen)
+                # 关闭跨进程聚合，避免不同 rank 调用次数不一致导致的 all_gather 死锁
+                current_batch_preds = model.predict(test_gen, gather_outputs=False)
 
                 if current_batch_preds is not None:
                     has_data = True
