@@ -120,6 +120,6 @@ data/
 !.github/
 
 # Dashboard logs configs
-dashboard/logs/configs/
+dashboard/logs/
 dashboard/user_configs/
 dashboard/state/
