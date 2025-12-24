@@ -460,10 +460,12 @@ def extract_latest_metrics(logfile):
     for line in reversed(tail.splitlines()):
         if "[Metrics]" in line:
             import re
-            pairs = re.findall(r'([A-Za-z0-9_]+):\s*([0-9\\.]+)', line)
+            metric_str = line.split("[Metrics]", 1)[-1]
+            # 只匹配包含字母的指标名，避免时间戳等纯数字键
+            pairs = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)', metric_str)
             if pairs:
                 return " / ".join(f"{k}={v}" for k, v in pairs[:3])
-            return line.split("[Metrics]", 1)[-1].strip()
+            return metric_str.strip()
     return "-"
 
 def update_history_record(username, pid, status, exit_code=None, message=None):
