@@ -433,6 +433,25 @@ def _tail_text_file(path, max_bytes=20000, max_lines=200):
     except Exception:
         return ""
 
+def _read_text_file(path, max_bytes=None):
+    """Read a text file with optional size cap; returns (text, truncated_flag)."""
+    if not path or (not os.path.exists(path)):
+        return "", False
+    try:
+        size = os.path.getsize(path)
+        truncated = False
+        if max_bytes is not None and size > max_bytes:
+            truncated = True
+            with open(path, "rb") as f:
+                f.seek(max(size - max_bytes, 0))
+                text = f.read().decode(errors="ignore")
+        else:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        return text, truncated
+    except Exception:
+        return "", False
+
 def extract_latest_metrics(logfile):
     """Extract the latest [Metrics] line from a log file for compact display."""
     tail = _tail_text_file(logfile, max_bytes=20000, max_lines=400)
@@ -1031,7 +1050,13 @@ if selected_model:
                     st.info("暂无活跃任务")
                             
         def start_process(command, log_filename, model_name, config_override_path=None, meta=None, env_overrides=None):
-            log_path = os.path.join(LOG_DIR, log_filename)
+            run_id = int(time.time())
+            base, ext = os.path.splitext(log_filename)
+            if not ext:
+                ext = ".log"
+            user_log_dir = os.path.join(LOG_DIR, current_user)
+            os.makedirs(user_log_dir, exist_ok=True)
+            log_path = os.path.join(user_log_dir, f"{base}_{run_id}{ext}")
             f = open(log_path, "w")
             
             final_cmd = command
@@ -1084,6 +1109,7 @@ if selected_model:
                 "gpu": meta.get("gpu"),
                 "num_workers": meta.get("num_workers"),
                 "start_time": time.time(),
+                "run_id": run_id,
                 "end_time": None,
                 "duration": None,
                 "status": "running",
@@ -1393,20 +1419,12 @@ if selected_model:
         
         col_train, col_infer, col_stop = st.columns(3)
         
-        # Check if current selected model matches the running model
-        is_running_other_model = st.session_state.run_pid is not None and st.session_state.running_model != selected_model
-        
-        if is_running_other_model:
-            st.warning(f"⚠️ 另一个模型 (**{st.session_state.running_model}**) 正在运行。请在开始新任务前停止它。")
-
         # Limit Checks
         can_start = True
         limit_msg = ""
         if not current_user:
             can_start = False
             limit_msg = "需要用户名。"
-        elif st.session_state.run_pid is not None:
-            can_start = False # Already running in this session
         elif user_task_count >= 3:
             can_start = False
             limit_msg = f"达到用户限制 ({user_task_count}/3)。"
@@ -1414,7 +1432,7 @@ if selected_model:
             can_start = False
             limit_msg = f"达到全局限制 ({global_task_count}/10)。"
 
-        if col_train.button("🔥 开始训练", type="primary", disabled=not can_start):
+        if col_train.button("开始训练", type="primary", disabled=not can_start):
             if not can_start and limit_msg:
                 st.error(limit_msg)
             else:
@@ -1434,7 +1452,7 @@ if selected_model:
 
             # Always generate temporary config to support num_workers and dataset override
             timestamp = int(time.time())
-            temp_config_dir = os.path.join(LOG_DIR, "configs", f"{expid}_{timestamp}")
+            temp_config_dir = os.path.join(LOG_DIR, current_user, "configs", f"{expid}_{timestamp}")
             os.makedirs(temp_config_dir, exist_ok=True)
             config_override_dir = temp_config_dir
             
@@ -1535,7 +1553,7 @@ if selected_model:
             )
             st.rerun()
 
-        if col_infer.button("🔮 开始推理", disabled=not can_start):
+        if col_infer.button("开始推理", disabled=not can_start):
             if not can_start and limit_msg:
                 st.error(limit_msg)
             else:
@@ -1556,7 +1574,7 @@ if selected_model:
 
             # Always generate temporary config to support num_workers and dataset override
             timestamp = int(time.time())
-            temp_config_dir = os.path.join(LOG_DIR, "configs", f"{expid}_infer_{timestamp}")
+            temp_config_dir = os.path.join(LOG_DIR, current_user, "configs", f"{expid}_infer_{timestamp}")
             os.makedirs(temp_config_dir, exist_ok=True)
             config_override_dir = temp_config_dir
             
@@ -1653,7 +1671,7 @@ if selected_model:
             )
             st.rerun()
             
-        if col_stop.button("🛑 停止进程", type="secondary", disabled=st.session_state.run_pid is None):
+        if col_stop.button("停止进程", type="secondary", disabled=st.session_state.run_pid is None):
             stop_process()
             st.rerun()
 
@@ -1753,15 +1771,12 @@ if selected_model:
                     
                     # Dataframe for files
                     file_data = []
-                    log_files = []
                     for f in files:
                         fp = os.path.join(target_dir, f)
                         stat = os.stat(fp)
                         size_mb = stat.st_size / (1024 * 1024)
                         mod_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
                         file_data.append({"文件名": f, "大小 (MB)": f"{size_mb:.2f}", "最后修改时间": mod_time})
-                        if f.endswith(".log"):
-                            log_files.append(f)
                     
                     # Sort files for display (optional, but good for UX)
                     file_data.sort(key=lambda x: x["最后修改时间"], reverse=True)
@@ -1769,21 +1784,30 @@ if selected_model:
                     df = pd.DataFrame(file_data)
                     st.dataframe(df, use_container_width=True)
 
-                    # Log Preview Section
+                    # Log Preview Section (per-user log dir to avoid覆盖)
+                    user_log_dir = os.path.join(LOG_DIR, current_user)
+                    log_files = []
+                    if os.path.exists(user_log_dir):
+                        for f in os.listdir(user_log_dir):
+                            if f.endswith(".log"):
+                                # 若有 expid 选择，则仅展示包含该 expid 的日志，减少干扰
+                                if expid and expid not in f:
+                                    continue
+                                log_files.append(f)
                     if log_files:
-                        # Sort log files by modification time (newest first)
                         try:
-                            log_files.sort(key=lambda x: os.path.getmtime(os.path.join(target_dir, x)), reverse=True)
+                            log_files.sort(key=lambda x: os.path.getmtime(os.path.join(user_log_dir, x)), reverse=True)
                         except Exception:
                             pass
 
                         st.markdown("---")
-                        st.subheader("📜 日志查看器")
+                        st.subheader("📜 日志查看器（按用户存储）")
                         selected_log = st.selectbox("选择日志文件", log_files, index=0, help="默认选中最新修改的日志")
                         if selected_log:
-                            log_path = os.path.join(target_dir, selected_log)
-                            with open(log_path, "r") as f:
-                                st.code(f.read(), language="text")
+                            log_path = os.path.join(user_log_dir, selected_log)
+                            log_tail = _tail_text_file(log_path, max_bytes=80000, max_lines=800)
+                            st.code(log_tail or "日志为空或不可读。", language="text")
+                            st.caption(f"路径: `{log_path}`")
             else:
                 st.warning("在 checkpoints 中未找到数据集目录。")
         else:
@@ -1850,6 +1874,21 @@ if selected_model:
     with tab5:
         st.header("🗂️ 历史运行记录")
         st.caption("此处仅展示当前左侧所选用户的运行记录，切换侧边栏用户名即可查看自己的历史。每条记录支持删除。")
+        st.markdown("""
+            <style>
+            .history-row {
+                padding: 8px 10px;
+                background: #F9FAFB;
+                border: 1px solid #E5E7EB;
+                border-radius: 10px;
+                margin-bottom: 6px;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+                font-size: 0.9rem;
+            }
+            .history-row strong { color: #111827; }
+            .history-meta { color: #4B5563; font-size: 0.85rem; }
+            </style>
+        """, unsafe_allow_html=True)
 
         target_user = current_user
         user_history = load_history(target_user)
@@ -1886,28 +1925,21 @@ if selected_model:
                 
                 # 单行摘要
                 summary = (
-                    f"{start_str} | {rec.get('model', '-')}/{rec.get('expid', '-')} "
-                    f"| {rec.get('mode', '-')} | GPU:{gpu_display} "
-                    f"| 时长:{format_duration(duration_val)} "
-                    f"| 状态:{rec.get('status', '-')} {success_display} "
-                    f"| 指标:{metrics_summary}"
+                    f"<div class='history-row'>"
+                    f"<strong>{start_str}</strong> · {rec.get('model', '-')}/{rec.get('expid', '-')} "
+                    f"<span class='history-meta'>｜模式 {rec.get('mode', '-')} ｜GPU {gpu_display} ｜时长 {format_duration(duration_val)} "
+                    f"｜状态 {rec.get('status', '-')} {success_display} ｜指标 {metrics_summary}</span>"
+                    f"</div>"
                 )
 
-                col1, col2, col3 = st.columns([9, 1, 1], gap="small")
+                col1, col3 = st.columns([10, 1], gap="small")
                 with col1:
-                    st.markdown(summary)
-                with col2:
-                    logfile = rec.get('logfile')
-                    if logfile and os.path.exists(logfile):
-                        if st.button("📄 日志", key=f"view_log_{i}", help="查看日志尾部"):
-                            log_tail = _tail_text_file(logfile, max_bytes=30000, max_lines=300)
-                            st.text_area("日志尾部 (最近)", value=log_tail or "未找到内容", height=240, key=f"log_area_{i}")
+                    st.markdown(summary, unsafe_allow_html=True)
                 with col3:
                     pid = rec.get('pid')
                     if pid and st.button("🗑️", key=f"delete_{i}", help="删除此记录"):
                         if delete_history_record(target_user, pid):
                             st.toast(f"已删除记录 PID: {pid}", icon="✅")
                             st.rerun()
-                st.markdown("---")
         else:
             st.info(f"用户 {target_user} 暂无历史记录")
