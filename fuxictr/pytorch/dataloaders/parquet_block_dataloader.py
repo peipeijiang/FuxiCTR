@@ -62,7 +62,7 @@ class ParquetIterDataPipe(IterDataPipe):
 
 class ParquetBlockDataLoader(DataLoader):
     def __init__(self, feature_map, data_path, split="train", batch_size=32, shuffle=False,
-                 num_workers=1, buffer_size=100000, **kwargs):
+                 num_workers=1, buffer_size=100000, drop_last=False, **kwargs):
         if not data_path.endswith("parquet"):
             data_path = os.path.join(data_path, "*.parquet")
         data_blocks = sorted(glob.glob(data_path)) # sort by part name
@@ -80,6 +80,7 @@ class ParquetBlockDataLoader(DataLoader):
         super().__init__(dataset=datapipe,
                          batch_size=batch_size,
                          num_workers=num_workers,
+                         drop_last=drop_last,
                          collate_fn=BatchCollator(feature_map))
 
     def __len__(self):

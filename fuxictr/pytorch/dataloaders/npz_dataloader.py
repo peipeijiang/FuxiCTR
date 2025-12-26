@@ -39,12 +39,14 @@ class NpzDataset(Dataset):
 
 
 class NpzDataLoader(DataLoader):
-    def __init__(self, feature_map, data_path, batch_size=32, shuffle=False, num_workers=1, **kwargs):
+    def __init__(self, feature_map, data_path, batch_size=32, shuffle=False, num_workers=1, drop_last=False, sampler=None, **kwargs):
         if not data_path.endswith(".npz"):
             data_path += ".npz"
         self.dataset = NpzDataset(feature_map, data_path)
         super(NpzDataLoader, self).__init__(dataset=self.dataset, batch_size=batch_size,
-                                            shuffle=shuffle, num_workers=num_workers,
+                                            shuffle=shuffle if sampler is None else False,
+                                            sampler=sampler, num_workers=num_workers,
+                                            drop_last=drop_last,
                                             collate_fn=BatchCollator(feature_map))
         self.num_samples = len(self.dataset)
         self.num_blocks = 1
