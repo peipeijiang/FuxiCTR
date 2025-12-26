@@ -75,10 +75,10 @@ class RankDataLoader(object):
                 DataLoader = ParquetBlockDataLoader if streaming else ParquetDataLoader
         self.stage = stage
         train_sampler = None
-        train_drop_last = kwargs.pop("drop_last", False)
-        if self._distributed:
-            # 默认丢弃尾部，保证步数对齐；可通过配置 drop_last 覆盖
-            train_drop_last = True
+        # 若未显式传入 drop_last，分布式默认开启以保证各 rank 步数对齐；单机默认关闭
+        train_drop_last = kwargs.pop("drop_last", None)
+        if train_drop_last is None:
+            train_drop_last = True if self._distributed else False
         if stage in ["both", "train"]:
             train_gen = DataLoader(feature_map, train_data, split="train", batch_size=batch_size,
                                    shuffle=False if self._distributed else shuffle,
