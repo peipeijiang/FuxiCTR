@@ -1,4 +1,5 @@
 import streamlit as st
+import logging
 import os
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import shutil
 import json
 import base64
 import psutil
+from datetime import datetime
 from code_editor import code_editor
 
 def get_gpu_options():
@@ -31,6 +33,16 @@ def get_gpu_options():
 def determine_mkl_threading_layer(devices):
     """Use GNU runtime whenever a GPU device participates."""
     return "GNU" if any(d is not None and d >= 0 for d in devices) else "INTEL"
+
+def normalize_data_path(root, path):
+    """Return absolute/normalized data path. If path is relative and root provided, join and norm."""
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    if root:
+        return os.path.normpath(os.path.join(root, path))
+    return os.path.normpath(path)
 
 # Set page config
 st.set_page_config(
@@ -1052,7 +1064,7 @@ if selected_model:
                     st.info("暂无活跃任务")
                             
         def start_process(command, log_filename, model_name, config_override_path=None, meta=None, env_overrides=None):
-            run_id = int(time.time())
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             base, ext = os.path.splitext(log_filename)
             if not ext:
                 ext = ".log"
@@ -1451,6 +1463,16 @@ if selected_model:
             ds_train_size = 0.8
             ds_valid_size = 0.1
             ds_test_size = 0.1
+            # Normalize data paths with data_root
+            ds_train = normalize_data_path(ds_root, ds_train)
+            ds_valid = normalize_data_path(ds_root, ds_valid)
+            ds_test = normalize_data_path(ds_root, ds_test)
+            ds_infer = normalize_data_path(ds_root, ds_infer)
+            # Normalize data paths with data_root
+            ds_train = normalize_data_path(ds_root, ds_train)
+            ds_valid = normalize_data_path(ds_root, ds_valid)
+            ds_test = normalize_data_path(ds_root, ds_test)
+            ds_infer = normalize_data_path(ds_root, ds_infer)
 
             # Always generate temporary config to support num_workers and dataset override
             timestamp = int(time.time())
@@ -1731,7 +1753,7 @@ if selected_model:
         # Only show logs if the selected model is the one running
         if st.session_state.running_model == selected_model or st.session_state.running_model is None:
             st.subheader("📋 实时日志")
-            
+                        
             # Auto-refresh toggle
             auto_refresh = st.checkbox("🔄 自动刷新日志", value=True, help="取消勾选以停止页面刷新（查看 TensorBoard 时很有用）")
 
@@ -1750,6 +1772,7 @@ if selected_model:
                 st.rerun()
         else:
             st.caption(f"**{st.session_state.running_model}** 的日志已隐藏。切换回该模型以查看实时日志。")
+
 
     with tab3:
         st.markdown("### 📂 权重与文件")
@@ -1774,6 +1797,9 @@ if selected_model:
                     # Dataframe for files
                     file_data = []
                     for f in files:
+                        # 跳过 TensorBoard 事件文件，避免干扰
+                        if f.startswith("events"):
+                            continue
                         fp = os.path.join(target_dir, f)
                         stat = os.stat(fp)
                         size_mb = stat.st_size / (1024 * 1024)
@@ -1785,35 +1811,41 @@ if selected_model:
                     
                     df = pd.DataFrame(file_data)
                     st.dataframe(df, use_container_width=True)
-
-                    # Log Preview Section (per-user log dir to avoid覆盖)
-                    user_log_dir = os.path.join(LOG_DIR, current_user)
-                    log_files = []
-                    if os.path.exists(user_log_dir):
-                        for f in os.listdir(user_log_dir):
-                            if f.endswith(".log"):
-                                # 若有 expid 选择，则仅展示包含该 expid 的日志，减少干扰
-                                if expid and expid not in f:
-                                    continue
-                                log_files.append(f)
-                    if log_files:
-                        try:
-                            log_files.sort(key=lambda x: os.path.getmtime(os.path.join(user_log_dir, x)), reverse=True)
-                        except Exception:
-                            pass
-
-                        st.markdown("---")
-                        st.subheader("📜 日志查看器（按用户存储）")
-                        selected_log = st.selectbox("选择日志文件", log_files, index=0, help="默认选中最新修改的日志")
-                        if selected_log:
-                            log_path = os.path.join(user_log_dir, selected_log)
-                            log_tail = _tail_text_file(log_path, max_bytes=80000, max_lines=800)
-                            st.code(log_tail or "日志为空或不可读。", language="text")
-                            st.caption(f"路径: `{log_path}`")
             else:
                 st.warning("在 checkpoints 中未找到数据集目录。")
         else:
             st.warning("尚未找到 checkpoints 目录。请先运行训练任务。")
+
+        # Log Preview Section (per-user log dir to avoid覆盖)
+        user_log_dir = os.path.join(LOG_DIR, current_user)
+        log_files = []
+        if os.path.exists(user_log_dir):
+            for f in os.listdir(user_log_dir):
+                if f.endswith(".log"):
+                    log_files.append(f)
+        # 优先按 expid 过滤；如果过滤后为空，则回退展示全部，避免“未找到”误报
+        filtered_logs = []
+        if expid:
+            filtered_logs = [f for f in log_files if expid in f]
+        if not filtered_logs:
+            filtered_logs = log_files[:]
+
+        if filtered_logs:
+            try:
+                filtered_logs.sort(key=lambda x: os.path.getmtime(os.path.join(user_log_dir, x)), reverse=True)
+            except Exception:
+                pass
+
+            st.markdown("---")
+            st.subheader("📜 日志查看器")
+            selected_log = st.selectbox("选择日志文件", filtered_logs, index=0, help="默认选中最新修改的日志（若按 expid 过滤为空则展示全部）")
+            if selected_log:
+                log_path = os.path.join(user_log_dir, selected_log)
+                log_tail = _tail_text_file(log_path, max_bytes=80000, max_lines=800)
+                st.code(log_tail or "日志为空或不可读。", language="text")
+                st.caption(f"路径: `{log_path}`")
+        else:
+            st.caption("未找到当前用户的日志文件。")
 
     with tab4:
         st.header("📈 TensorBoard 可视化")
