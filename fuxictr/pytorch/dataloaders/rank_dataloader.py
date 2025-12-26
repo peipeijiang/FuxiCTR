@@ -79,11 +79,27 @@ class RankDataLoader(object):
         train_drop_last = kwargs.pop("drop_last", None)
         if train_drop_last is None:
             train_drop_last = True if self._distributed else False
+        train_sampler_kwargs = None
+        eval_sampler_kwargs = None
+        if self._distributed and DataLoader in (ParquetDataLoader, NpzDataLoader):
+            train_sampler_kwargs = {
+                "num_replicas": self._distributed_world_size,
+                "rank": self._distributed_rank,
+                "shuffle": shuffle,
+                "drop_last": train_drop_last,
+            }
+            eval_sampler_kwargs = {
+                "num_replicas": self._distributed_world_size,
+                "rank": self._distributed_rank,
+                "shuffle": False,
+                "drop_last": False,
+            }
         if stage in ["both", "train"]:
             train_gen = DataLoader(feature_map, train_data, split="train", batch_size=batch_size,
                                    shuffle=False if self._distributed else shuffle,
                                    sampler=train_sampler,
                                    drop_last=train_drop_last,
+                                   sampler_kwargs=train_sampler_kwargs,
                                    **kwargs)
             if self._distributed_rank == 0:
                 logging.info(
@@ -92,7 +108,10 @@ class RankDataLoader(object):
                 )     
             if valid_data:
                 valid_gen = DataLoader(feature_map, valid_data, split="valid",
-                                       batch_size=batch_size, shuffle=False, drop_last=False, **kwargs)
+                                       batch_size=batch_size, shuffle=False, drop_last=False,
+                                       sampler=None,
+                                       sampler_kwargs=eval_sampler_kwargs,
+                                       **kwargs)
                 if self._distributed_rank == 0:
                     logging.info(
                         "Validation samples: total/{:d}, blocks/{:d}"
@@ -102,7 +121,10 @@ class RankDataLoader(object):
         if stage in ["both", "test"]:
             if test_data:
                 test_gen = DataLoader(feature_map, test_data, split="test", batch_size=batch_size,
-                                      shuffle=False, drop_last=False, **kwargs)
+                                      shuffle=False, drop_last=False,
+                                      sampler=None,
+                                      sampler_kwargs=eval_sampler_kwargs,
+                                      **kwargs)
                 if self._distributed_rank == 0:
                     logging.info(
                         "Test samples: total/{:d}, blocks/{:d}"

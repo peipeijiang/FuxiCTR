@@ -20,6 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 import pandas as pd
 import polars as pl
+from torch.utils.data.distributed import DistributedSampler
 
 
 class ParquetDataset(Dataset):
@@ -48,10 +49,12 @@ class ParquetDataset(Dataset):
 
 class ParquetDataLoader(DataLoader):
     def __init__(self, feature_map, data_path, batch_size=32, shuffle=False,
-                 num_workers=1, drop_last=False, sampler=None, **kwargs):
+                 num_workers=1, drop_last=False, sampler=None, sampler_kwargs=None, **kwargs):
         if not data_path.endswith(".parquet"):
             data_path += ".parquet"
         self.dataset = ParquetDataset(feature_map, data_path)
+        if sampler is None and sampler_kwargs:
+            sampler = DistributedSampler(self.dataset, **sampler_kwargs)
         super().__init__(dataset=self.dataset, batch_size=batch_size,
                          shuffle=shuffle if sampler is None else False,
                          num_workers=num_workers, sampler=sampler,
@@ -59,7 +62,10 @@ class ParquetDataLoader(DataLoader):
                          collate_fn=BatchCollator(feature_map))
         self.num_samples = len(self.dataset)
         self.num_blocks = 1
-        self.num_batches = int(np.ceil(self.num_samples / self.batch_size))
+        if drop_last:
+            self.num_batches = int(np.floor(self.num_samples / self.batch_size))
+        else:
+            self.num_batches = int(np.ceil(self.num_samples / self.batch_size))
 
     def __len__(self):
         return self.num_batches

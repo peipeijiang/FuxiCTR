@@ -71,6 +71,7 @@ class ParquetBlockDataLoader(DataLoader):
         self.num_blocks = len(self.data_blocks)
         self.feature_map = feature_map
         self.batch_size = batch_size
+        self.drop_last = drop_last
         self.num_batches, self.num_samples = self.count_batches_and_samples()
         datapipe = ParquetIterDataPipe(self.data_blocks, feature_map)
         if shuffle:
@@ -91,7 +92,10 @@ class ParquetBlockDataLoader(DataLoader):
         for data_block in self.data_blocks:
             df = pl.scan_parquet(data_block)
             num_samples += df.select(pl.count()).collect().item()
-        num_batches = int(np.ceil(num_samples / self.batch_size))
+        if self.drop_last:
+            num_batches = int(np.floor(num_samples / self.batch_size))
+        else:
+            num_batches = int(np.ceil(num_samples / self.batch_size))
         return num_batches, num_samples
 
 

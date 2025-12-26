@@ -18,6 +18,7 @@
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
+from torch.utils.data.distributed import DistributedSampler
 
 
 class NpzDataset(Dataset):
@@ -39,10 +40,12 @@ class NpzDataset(Dataset):
 
 
 class NpzDataLoader(DataLoader):
-    def __init__(self, feature_map, data_path, batch_size=32, shuffle=False, num_workers=1, drop_last=False, sampler=None, **kwargs):
+    def __init__(self, feature_map, data_path, batch_size=32, shuffle=False, num_workers=1, drop_last=False, sampler=None, sampler_kwargs=None, **kwargs):
         if not data_path.endswith(".npz"):
             data_path += ".npz"
         self.dataset = NpzDataset(feature_map, data_path)
+        if sampler is None and sampler_kwargs:
+            sampler = DistributedSampler(self.dataset, **sampler_kwargs)
         super(NpzDataLoader, self).__init__(dataset=self.dataset, batch_size=batch_size,
                                             shuffle=shuffle if sampler is None else False,
                                             sampler=sampler, num_workers=num_workers,
@@ -50,7 +53,10 @@ class NpzDataLoader(DataLoader):
                                             collate_fn=BatchCollator(feature_map))
         self.num_samples = len(self.dataset)
         self.num_blocks = 1
-        self.num_batches = int(np.ceil(self.num_samples * 1.0 / self.batch_size))
+        if drop_last:
+            self.num_batches = int(np.floor(self.num_samples / self.batch_size))
+        else:
+            self.num_batches = int(np.ceil(self.num_samples * 1.0 / self.batch_size))
 
     def __len__(self):
         return self.num_batches
