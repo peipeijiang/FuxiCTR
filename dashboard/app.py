@@ -35,14 +35,23 @@ def determine_mkl_threading_layer(devices):
     return "GNU" if any(d is not None and d >= 0 for d in devices) else "INTEL"
 
 def normalize_data_path(root, path):
-    """Return absolute/normalized data path. If path is relative and root provided, join and norm."""
+    """Return absolute/normalized data path.
+
+    - If `path` 已经是绝对路径，直接归一化返回。
+    - 如果 `path` 已经以 `root` 开头（例如用户手动填了 `${root}/xxx`），避免重复拼接。
+    - 否则在有 root 时进行拼接。
+    """
     if not path:
         return path
     if os.path.isabs(path):
-        return path
-    if root:
-        return os.path.normpath(os.path.join(root, path))
-    return os.path.normpath(path)
+        return os.path.normpath(path)
+    root_norm = os.path.normpath(root) if root else ""
+    path_norm = os.path.normpath(path)
+    if root_norm and (path_norm.startswith(root_norm) or path.startswith(root_norm)):
+        return path_norm
+    if root_norm:
+        return os.path.normpath(os.path.join(root_norm, path))
+    return path_norm
 
 # Set page config
 st.set_page_config(
@@ -700,12 +709,11 @@ with st.sidebar:
             if st.session_state.dataset_template:
                 d = st.session_state.dataset_template
                 st.session_state.ds_id_val = d
-                path = os.path.join(relative_data_path, d)
-                st.session_state.ds_train_val = path
-                st.session_state.ds_valid_val = path
-                st.session_state.ds_test_val = path
-                st.session_state.ds_infer_val = path
                 st.session_state.ds_root_val = relative_data_path
+                st.session_state.ds_train_val = d
+                st.session_state.ds_valid_val = d
+                st.session_state.ds_test_val = d
+                st.session_state.ds_infer_val = d
 
         st.selectbox(
             "快速加载数据集模板 (可选)", 
@@ -756,8 +764,9 @@ with st.sidebar:
                         options.insert(0, current)
                     elif not current:
                         options.insert(0, "") # Allow empty selection
-                    
-                    st.selectbox(label, options, key=key, help=help_msg)
+
+                    default_idx = options.index(current) if current in options else 0
+                    st.selectbox(label, options, key=key, index=default_idx, help=help_msg)
                 else:
                     st.text_input(label, key=key, help=help_msg)
 
@@ -765,7 +774,7 @@ with st.sidebar:
             render_file_selector("Valid Data", "ds_valid_val", "验证数据文件路径")
             render_file_selector("Test Data", "ds_test_val", "测试数据文件路径")
 
-            st.text_input("Infer Data", key="ds_infer_val", help="推理数据文件路径 (可选，留空则忽略)")
+            render_file_selector("Infer Data", "ds_infer_val", "推理数据文件路径 (可选，留空则忽略)")
             st.selectbox("Split Type", ["random", "sequential"], key="ds_split_val", help="数据切分方式")
 
 if selected_model:
@@ -1468,11 +1477,6 @@ if selected_model:
             ds_valid = normalize_data_path(ds_root, ds_valid)
             ds_test = normalize_data_path(ds_root, ds_test)
             ds_infer = normalize_data_path(ds_root, ds_infer)
-            # Normalize data paths with data_root
-            ds_train = normalize_data_path(ds_root, ds_train)
-            ds_valid = normalize_data_path(ds_root, ds_valid)
-            ds_test = normalize_data_path(ds_root, ds_test)
-            ds_infer = normalize_data_path(ds_root, ds_infer)
 
             # Always generate temporary config to support num_workers and dataset override
             timestamp = int(time.time())
@@ -1595,6 +1599,11 @@ if selected_model:
             ds_train_size = 0.8
             ds_valid_size = 0.1
             ds_test_size = 0.1
+            # Normalize data paths with data_root
+            ds_train = normalize_data_path(ds_root, ds_train)
+            ds_valid = normalize_data_path(ds_root, ds_valid)
+            ds_test = normalize_data_path(ds_root, ds_test)
+            ds_infer = normalize_data_path(ds_root, ds_infer)
 
             # Always generate temporary config to support num_workers and dataset override
             timestamp = int(time.time())
