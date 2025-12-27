@@ -25,6 +25,27 @@ import pandas as pd
 import os
 
 
+def _series_to_array(series, col_name):
+    """Convert a pandas Series to a NumPy array with validation.
+
+    - If the series holds sequence-like values (list/tuple/ndarray), keep them as arrays.
+    - If it holds strings that should be numeric, attempt to cast and raise a clear error on failure.
+    """
+    if series.dtype == "object":
+        non_null = series[pd.notnull(series)]
+        sample = non_null.iloc[0] if not non_null.empty else None
+        if isinstance(sample, (list, tuple, np.ndarray)):
+            return np.array(series.to_list())
+        numeric = pd.to_numeric(series, errors="coerce")
+        if numeric.isnull().any():
+            bad_value = series[numeric.isnull()].iloc[0]
+            raise TypeError(
+                f"列 {col_name} 含有非数值内容（例如: {bad_value!r}），请在保存 parquet 前完成编码或转为数值类型。"
+            )
+        return numeric.to_numpy()
+    return series.to_numpy()
+
+
 class ParquetIterDataPipe(IterDataPipe):
     def __init__(self, data_blocks, feature_map):
         self.feature_map = feature_map
@@ -35,10 +56,7 @@ class ParquetIterDataPipe(IterDataPipe):
         all_cols = list(self.feature_map.features.keys()) + self.feature_map.labels
         data_arrays = []
         for col in all_cols:
-            if df[col].dtype == "object":
-                array = np.array(df[col].to_list())
-            else:
-                array = df[col].to_numpy()
+            array = _series_to_array(df[col], col)
             data_arrays.append(array)
         return np.column_stack(data_arrays)
 
