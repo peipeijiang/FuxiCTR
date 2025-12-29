@@ -44,49 +44,8 @@ import torch
 import torch.distributed as dist
 
 
-def _flush_buffer(file_idx, buffer, output_dir, rank, file_writers):
-    """Flush accumulated predictions to disk for a specific file.
-
-    Note: For Parquet format, we accumulate data in memory and write once per file
-    to avoid the overhead of reading + rewriting the entire file on each flush.
-    """
-    if not buffer['preds']:
-        return
-
-    # Concatenate all batches
-    all_preds = np.concatenate(buffer['preds'])
-
-    # Concatenate all IDs
-    ids_dict = {}
-    for col, arr_list in buffer['ids'].items():
-        if arr_list and arr_list[0] is not None:
-            ids_dict[col] = np.concatenate(arr_list)
-
-    # Create DataFrame
-    result_df = pd.DataFrame({'pred': all_preds})
-    for col, vals in ids_dict.items():
-        result_df[col] = vals
-
-    # Use original file index from rank_files mapping
-    part_file = os.path.join(output_dir, f"part_{file_idx}_rank{rank}.parquet")
-
-    # Accumulate data in memory buffer instead of incremental writes
-    # Parquet is not suitable for frequent small appends (requires read + rewrite entire file)
-    if file_idx in file_writers:
-        # Append to in-memory buffer
-        file_writers[file_idx]['data'].append(result_df)
-        file_writers[file_idx]['count'] += len(result_df)
-    else:
-        # Create new buffer
-        file_writers[file_idx] = {
-            'data': [result_df],
-            'count': len(result_df),
-            'file': part_file
-        }
-
-
 def finalize_files(file_writers):
-    """Write all accumulated data to Parquet files (called at the end)."""
+    """Write all accumulated data to Parquet files (called when file completes or at the end)."""
     for file_idx, buffer_info in file_writers.items():
         if buffer_info['data']:
             # Concatenate all batches and write once
@@ -311,6 +270,20 @@ def run_inference(model, feature_map, params, args):
     logging.info(f"Rank {rank}: Using num_workers={params.get('num_workers', 1)} for inference")
 
     if rank_files:
+        # Scan all files to get total row counts (for detecting file completion)
+        import pyarrow.parquet as pq
+        file_total_rows = {}
+        for file_idx, file_path in enumerate(rank_files):
+            try:
+                parquet_file = pq.ParquetFile(file_path)
+                file_total_rows[file_idx] = parquet_file.metadata.num_rows
+            except Exception as e:
+                logging.warning(f"Failed to read metadata for {file_path}: {e}")
+                file_total_rows[file_idx] = 0
+
+        if rank == 0:
+            logging.info(f"Rank {rank}: Scanned {len(file_total_rows)} files, total rows: {sum(file_total_rows.values())}")
+
         # Use streaming ParquetTransformBlockDataLoader for better memory efficiency
         # Pass all rank_files at once to leverage multi-worker data loading
         inference_params = params.copy()
@@ -328,8 +301,9 @@ def run_inference(model, feature_map, params, args):
 
         model._verbose = 0
 
-        # Stream batches and write incrementally
-        batch_buffer = {}
+        # Track processed rows per file to detect completion
+        file_processed_rows = {}
+        # Accumulate predictions directly in file_writers (no batch_buffer)
         file_writers = {}
 
         try:
@@ -356,8 +330,7 @@ def run_inference(model, feature_map, params, args):
                     pred_dict = model.forward(batch_data)
                     batch_preds = pred_dict["y_pred"].data.cpu().numpy().reshape(-1)
 
-                # Split predictions by file and accumulate
-                batch_start = 0
+                # Split predictions by file and accumulate directly to file_writers
                 for f_idx in file_indices_in_batch:
                     # Find rows belonging to this file
                     mask = file_idx_arr == f_idx
@@ -373,30 +346,36 @@ def run_inference(model, feature_map, params, args):
                             else:
                                 f_ids[col] = ids_batch[col][mask]
 
-                    # Accumulate predictions
-                    if f_idx not in batch_buffer:
-                        batch_buffer[f_idx] = {'preds': [], 'ids': {col: [] for col in f_ids}}
-
-                    batch_buffer[f_idx]['preds'].append(f_preds)
+                    # Create DataFrame for this batch's predictions
+                    result_df = pd.DataFrame({'pred': f_preds})
                     for col, vals in f_ids.items():
-                        batch_buffer[f_idx]['ids'][col].append(vals)
+                        result_df[col] = vals
 
-                    # Write buffer if large enough
-                    if sum(len(arr) for arr in batch_buffer[f_idx]['preds']) >= params.get('sweep_write_buffer_rows', 50000):
-                        _flush_buffer(f_idx, batch_buffer[f_idx], output_dir, rank, file_writers)
-                        batch_buffer[f_idx] = {'preds': [], 'ids': {col: [] for col in f_ids}}
+                    # Accumulate directly to file_writers (no intermediate batch_buffer)
+                    part_file = os.path.join(output_dir, f"part_{f_idx}_rank{rank}.parquet")
+                    if f_idx in file_writers:
+                        file_writers[f_idx]['data'].append(result_df)
+                        file_writers[f_idx]['count'] += f_count
+                    else:
+                        file_writers[f_idx] = {
+                            'data': [result_df],
+                            'count': f_count,
+                            'file': part_file
+                        }
 
-                    batch_start += f_count
+                    # Track processed rows
+                    file_processed_rows[f_idx] = file_processed_rows.get(f_idx, 0) + f_count
+
+                    # Check if file is complete and write immediately
+                    if file_processed_rows[f_idx] >= file_total_rows[f_idx]:
+                        # File complete: write and free memory
+                        finalize_files({f_idx: file_writers[f_idx]})
+                        del file_writers[f_idx]  # Free memory immediately
 
                 has_data = True
 
         finally:
-            # Flush remaining buffers
-            for f_idx, buffer in batch_buffer.items():
-                if buffer['preds']:
-                    _flush_buffer(f_idx, buffer, output_dir, rank, file_writers)
-
-            # Finalize all Parquet files (write accumulated data)
+            # Finalize any remaining files (should be empty if all files completed)
             finalize_files(file_writers)
             file_writers.clear()
 
