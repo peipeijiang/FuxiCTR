@@ -1,6 +1,6 @@
 # =========================================================================
 # Copyright (C) 2024. The FuxiCTR Library. All rights reserved.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -19,6 +19,11 @@ import os
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
 import sys
 sys.path.append(os.path.abspath("../.."))
+
+# Suppress warnings from deprecated packages (pynvml/nvidia-ml-py)
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 import logging
 import fuxictr_version
 from fuxictr import datasets
@@ -40,7 +45,11 @@ import torch.distributed as dist
 
 
 def _flush_buffer(file_idx, buffer, output_dir, rank, file_writers):
-    """Flush accumulated predictions to disk for a specific file."""
+    """Flush accumulated predictions to disk for a specific file.
+
+    Note: For Parquet format, we accumulate data in memory and write once per file
+    to avoid the overhead of reading + rewriting the entire file on each flush.
+    """
     if not buffer['preds']:
         return
 
@@ -61,16 +70,28 @@ def _flush_buffer(file_idx, buffer, output_dir, rank, file_writers):
     # Use original file index from rank_files mapping
     part_file = os.path.join(output_dir, f"part_{file_idx}_rank{rank}.parquet")
 
-    # Write or append
+    # Accumulate data in memory buffer instead of incremental writes
+    # Parquet is not suitable for frequent small appends (requires read + rewrite entire file)
     if file_idx in file_writers:
-        # Append to existing file
-        existing_df = pd.read_parquet(part_file)
-        combined_df = pd.concat([existing_df, result_df], ignore_index=True)
-        combined_df.to_parquet(part_file, index=False)
+        # Append to in-memory buffer
+        file_writers[file_idx]['data'].append(result_df)
+        file_writers[file_idx]['count'] += len(result_df)
     else:
-        # Create new file
-        result_df.to_parquet(part_file, index=False)
-        file_writers[file_idx] = part_file
+        # Create new buffer
+        file_writers[file_idx] = {
+            'data': [result_df],
+            'count': len(result_df),
+            'file': part_file
+        }
+
+
+def finalize_files(file_writers):
+    """Write all accumulated data to Parquet files (called at the end)."""
+    for file_idx, buffer_info in file_writers.items():
+        if buffer_info['data']:
+            # Concatenate all batches and write once
+            final_df = pd.concat(buffer_info['data'], ignore_index=True)
+            final_df.to_parquet(buffer_info['file'], index=False)
 
 
 def run_train(model, feature_map, params, args):
@@ -375,12 +396,9 @@ def run_inference(model, feature_map, params, args):
                 if buffer['preds']:
                     _flush_buffer(f_idx, buffer, output_dir, rank, file_writers)
 
-            # Close all writers
-            for writer in file_writers.values():
-                try:
-                    writer.close()
-                except:
-                    pass
+            # Finalize all Parquet files (write accumulated data)
+            finalize_files(file_writers)
+            file_writers.clear()
 
             logger.setLevel(original_level)
 
