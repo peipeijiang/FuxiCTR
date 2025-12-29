@@ -25,7 +25,7 @@ from fuxictr import datasets
 from datetime import datetime
 from fuxictr.utils import load_config, set_logger, print_to_json, print_to_list
 from fuxictr.features import FeatureMap
-from fuxictr.pytorch.dataloaders import RankDataLoader, DataFrameDataLoader
+from fuxictr.pytorch.dataloaders import RankDataLoader, DataFrameDataLoader, ParquetTransformBlockDataLoader
 from fuxictr.pytorch.torch_utils import seed_everything, init_distributed_env, distributed_barrier
 from fuxictr.preprocess import FeatureProcessor, build_dataset
 import src
@@ -37,6 +37,40 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributed as dist
+
+
+def _flush_buffer(file_idx, buffer, output_dir, rank, file_writers):
+    """Flush accumulated predictions to disk for a specific file."""
+    if not buffer['preds']:
+        return
+
+    # Concatenate all batches
+    all_preds = np.concatenate(buffer['preds'])
+
+    # Concatenate all IDs
+    ids_dict = {}
+    for col, arr_list in buffer['ids'].items():
+        if arr_list and arr_list[0] is not None:
+            ids_dict[col] = np.concatenate(arr_list)
+
+    # Create DataFrame
+    result_df = pd.DataFrame({'pred': all_preds})
+    for col, vals in ids_dict.items():
+        result_df[col] = vals
+
+    # Use original file index from rank_files mapping
+    part_file = os.path.join(output_dir, f"part_{file_idx}_rank{rank}.parquet")
+
+    # Write or append
+    if file_idx in file_writers:
+        # Append to existing file
+        existing_df = pd.read_parquet(part_file)
+        combined_df = pd.concat([existing_df, result_df], ignore_index=True)
+        combined_df.to_parquet(part_file, index=False)
+    else:
+        # Create new file
+        result_df.to_parquet(part_file, index=False)
+        file_writers[file_idx] = part_file
 
 
 def run_train(model, feature_map, params, args):
@@ -235,62 +269,121 @@ def run_inference(model, feature_map, params, args):
     
     # Log distribution for debugging
     logging.info(f"Rank {rank}: Processing {len(rank_files)} files (indices: {file_indices})")
-    
+
+    # Log num_workers setting before starting inference (before logger.setLevel)
+    if rank == 0:
+        num_workers_value = params.get('num_workers', 1)
+        batch_size_value = params.get('batch_size', 10000)
+        chunk_size_value = params.get('infer_chunk_size', 10000)
+        data_loader_type = "ParquetTransformBlockDataLoader (streaming)"
+        logging.info(f"=" * 60)
+        logging.info(f"Rank {rank}: Inference Configuration:")
+        logging.info(f"  - DataLoader: {data_loader_type}")
+        logging.info(f"  - Num Workers: {num_workers_value} (from app.py/frontend setting)")
+        logging.info(f"  - Batch Size: {batch_size_value}")
+        logging.info(f"  - Chunk Size: {chunk_size_value} (rows per chunk for memory optimization)")
+        logging.info(f"  - Files to process: {len(rank_files)}")
+        logging.info(f"  - Streaming mode: Enabled (batch-level incremental write)")
+        logging.info(f"=" * 60)
+
+    # Ensure all ranks log their configuration
+    logging.info(f"Rank {rank}: Using num_workers={params.get('num_workers', 1)} for inference")
+
     if rank_files:
-        # Use zip to iterate with both file and original index
-        for file_idx, f in zip(file_indices, tqdm(rank_files, desc=f"Inference (Rank {rank})", disable=rank!=0)):
-            logger.setLevel(logging.WARNING)
-            try:
-                # Inference files usually have no label; skip labels
-                ddf = feature_encoder.read_data(f, data_format=data_format, include_labels=False)
+        # Use streaming ParquetTransformBlockDataLoader for better memory efficiency
+        # Pass all rank_files at once to leverage multi-worker data loading
+        inference_params = params.copy()
+        inference_params['test_data'] = rank_files  # Pass file paths directly
+        inference_params['data_loader'] = ParquetTransformBlockDataLoader  # Streaming loader
+        inference_params['feature_encoder'] = feature_encoder
+        inference_params['id_cols'] = ['phone', 'phone_md5']
+        inference_params['shuffle'] = False
+        inference_params['batch_size'] = params.get('batch_size', 10000)
+        inference_params['num_workers'] = params.get('num_workers', 0)
+        inference_params['multiprocessing_context'] = 'spawn'
+        inference_params['chunk_size'] = params.get('infer_chunk_size', 10000)  # Default: 10K rows per chunk for memory efficiency
 
-                # Extract IDs before preprocess (which filters columns)
-                ids = ddf.select([c for c in ['phone', 'phone_md5'] if c in ddf.columns]).collect().to_pandas()
+        test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
 
-                # Preprocess (handles sequence conversion) and Transform
-                df = feature_encoder.preprocess(ddf).collect().to_pandas()
-                df = feature_encoder.transform(df)
+        model._verbose = 0
 
-                # Pass num_workers and other params to RankDataLoader
-                # Use the same approach as in training: pass all params and let RankDataLoader handle them
-                # We need to ensure test_data is passed correctly
-                inference_params = params.copy()
-                inference_params['test_data'] = [df]
-                inference_params['data_loader'] = DataFrameDataLoader
-                # For inference, we don't need shuffle
-                inference_params['shuffle'] = False
-                # Ensure num_workers is passed (DataFrameDataLoader defaults to 0)
-                if 'num_workers' not in inference_params:
-                    inference_params['num_workers'] = params.get('num_workers', 1)
-                if rank == 0:
-                    logging.info(f"Rank {rank}: using num_workers={inference_params.get('num_workers')} for inference")
-                test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
+        # Stream batches and write incrementally
+        batch_buffer = {}
+        file_writers = {}
 
-                model._verbose = 0
-                # 关闭跨进程聚合，避免不同 rank 调用次数不一致导致的 all_gather 死锁
-                current_batch_preds = model.predict(test_gen, gather_outputs=False)
+        try:
+            for batch_data in tqdm(test_gen, desc=f"Inference (Rank {rank})", disable=rank!=0):
+                # Extract file index and IDs from batch
+                file_idx_arr = batch_data.pop("_file_idx", None)
+                if file_idx_arr is None:
+                    logging.warning("No _file_idx in batch, skipping")
+                    continue
 
-                if current_batch_preds is not None:
-                    has_data = True
+                # Get unique files in this batch
+                file_indices_in_batch = np.unique(file_idx_arr)
 
-                    # Dict (Normal inference) or Array
-                    pred_df = pd.DataFrame(current_batch_preds, columns=['pred'])
-                    result_df = pd.concat([ids.reset_index(drop=True), pred_df.reset_index(drop=True)], axis=1)
+                # Extract ID columns
+                ids_batch = {}
+                for col in ['phone', 'phone_md5']:
+                    if col in batch_data:
+                        ids_batch[col] = batch_data.pop(col)
+                    else:
+                        ids_batch[col] = None
 
-                    # Save as Parquet part file with rank identifier
-                    # Use original file index instead of rank_files index
-                    part_file = os.path.join(output_dir, f"part_{file_idx}_rank{rank}.parquet")
-                    result_df.to_parquet(part_file, index=False)
-                
-                model._verbose = params.get('verbose', 1)
-                
-                # Explicit garbage collection
-                del ddf, df, ids, current_batch_preds
-                gc.collect()
+                # Predict
+                with torch.no_grad():
+                    pred_dict = model.forward(batch_data)
+                    batch_preds = pred_dict["y_pred"].data.cpu().numpy().reshape(-1)
 
-            finally:
-                logger.setLevel(original_level)
-    
+                # Split predictions by file and accumulate
+                batch_start = 0
+                for f_idx in file_indices_in_batch:
+                    # Find rows belonging to this file
+                    mask = file_idx_arr == f_idx
+                    f_preds = batch_preds[mask]
+                    f_count = len(f_preds)
+
+                    # Get IDs for this file
+                    f_ids = {}
+                    for col in ['phone', 'phone_md5']:
+                        if ids_batch[col] is not None:
+                            if torch.is_tensor(ids_batch[col]):
+                                f_ids[col] = ids_batch[col][mask].cpu().numpy()
+                            else:
+                                f_ids[col] = ids_batch[col][mask]
+
+                    # Accumulate predictions
+                    if f_idx not in batch_buffer:
+                        batch_buffer[f_idx] = {'preds': [], 'ids': {col: [] for col in f_ids}}
+
+                    batch_buffer[f_idx]['preds'].append(f_preds)
+                    for col, vals in f_ids.items():
+                        batch_buffer[f_idx]['ids'][col].append(vals)
+
+                    # Write buffer if large enough
+                    if sum(len(arr) for arr in batch_buffer[f_idx]['preds']) >= params.get('sweep_write_buffer_rows', 50000):
+                        _flush_buffer(f_idx, batch_buffer[f_idx], output_dir, rank, file_writers)
+                        batch_buffer[f_idx] = {'preds': [], 'ids': {col: [] for col in f_ids}}
+
+                    batch_start += f_count
+
+                has_data = True
+
+        finally:
+            # Flush remaining buffers
+            for f_idx, buffer in batch_buffer.items():
+                if buffer['preds']:
+                    _flush_buffer(f_idx, buffer, output_dir, rank, file_writers)
+
+            # Close all writers
+            for writer in file_writers.values():
+                try:
+                    writer.close()
+                except:
+                    pass
+
+            logger.setLevel(original_level)
+
     if distributed and dist.is_initialized():
         distributed_barrier()
     

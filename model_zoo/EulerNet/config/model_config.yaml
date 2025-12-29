@@ -11,6 +11,8 @@ Base:
     use_features: null
     feature_specs: null
     feature_config: null
+    # Inference optimization (for ParquetTransformBlockDataLoader)
+    infer_chunk_size: 10000  # Rows per chunk when converting DataFrame to dict (reduces memory peak)
 
 EulerNet_default: # This is a config template
     model: EulerNet
