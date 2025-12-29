@@ -489,6 +489,31 @@ def extract_latest_metrics(logfile):
             return metric_str.strip()
     return "-"
 
+def get_metrics_from_csv(expid, model_path):
+    """从实验的CSV文件中读取最新的验证和测试指标"""
+    csv_path = os.path.join(model_path, f"{expid}.csv")
+    if not os.path.exists(csv_path):
+        return "-", "-"
+    try:
+        with open(csv_path, 'r') as f:
+            lines = f.readlines()
+            if not lines:
+                return "-", "-"
+            # 取最后一行
+            last_line = lines[-1].strip()
+            # 解析格式：时间戳,[command] ...,[exp_id] ...,[dataset_id] ...,[train] ...,[val] ...,[test] ...
+            parts = last_line.split(',')
+            val_metrics = "-"
+            test_metrics = "-"
+            for part in parts:
+                if part.startswith('[val] '):
+                    val_metrics = part[6:]  # 去掉 '[val] '
+                elif part.startswith('[test] '):
+                    test_metrics = part[7:]  # 去掉 '[test] '
+            return val_metrics, test_metrics
+    except Exception:
+        return "-", "-"
+
 def update_history_record(username, pid, status, exit_code=None, message=None):
     history = load_history(username)
     updated = False
@@ -509,6 +534,19 @@ def update_history_record(username, pid, status, exit_code=None, message=None):
                 item['success'] = True
             elif status == 'failed':
                 item['success'] = False
+            
+            # 如果任务完成（成功/失败/停止），尝试从CSV文件读取指标并存储到记录中
+            if status in ['success', 'failed', 'stopped']:
+                model = item.get('model')
+                expid = item.get('expid')
+                if model and expid:
+                    model_path = os.path.join(MODEL_ZOO_DIR, model)
+                    val_metrics, test_metrics = get_metrics_from_csv(expid, model_path)
+                    if val_metrics != "-":
+                        item['val_metrics'] = val_metrics
+                    if test_metrics != "-":
+                        item['test_metrics'] = test_metrics
+            
             updated = True
             break
     if updated:
@@ -1964,7 +2002,27 @@ if selected_model:
                 
                 success_flag = rec.get('success')
                 success_display = '✅' if success_flag else ('❌' if success_flag is False else '—')
-                metrics_summary = extract_latest_metrics(rec.get('logfile'))
+                # 优先使用历史记录中已存储的指标（在任务完成时已从CSV读取并存储）
+                val_metrics = rec.get('val_metrics')
+                test_metrics = rec.get('test_metrics')
+                if val_metrics is not None or test_metrics is not None:
+                    # 使用存储的指标
+                    metrics_summary = ""
+                    if val_metrics:
+                        metrics_summary += f"val: {val_metrics}"
+                    if test_metrics:
+                        if metrics_summary:
+                            metrics_summary += " | "
+                        metrics_summary += f"test: {test_metrics}"
+                else:
+                    # 回退到从CSV文件读取指标，如果不存在则从日志提取
+                    val_metrics, test_metrics = get_metrics_from_csv(rec.get('expid'), os.path.join(MODEL_ZOO_DIR, rec.get('model')))
+                    if val_metrics != "-" or test_metrics != "-":
+                        metrics_summary = f"val: {val_metrics}"
+                        if test_metrics != "-":
+                            metrics_summary += f" | test: {test_metrics}"
+                    else:
+                        metrics_summary = extract_latest_metrics(rec.get('logfile'))
                 
                 # 单行摘要
                 summary = (

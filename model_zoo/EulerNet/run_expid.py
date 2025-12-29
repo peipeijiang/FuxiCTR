@@ -58,7 +58,7 @@ def run_train(model, feature_map, params, args):
         test_result = model.evaluate(test_gen)
     
     if rank == 0:
-        result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
+        result_filename = args['expid'] + '.csv'
         with open(result_filename, 'a+') as fw:
             fw.write(' {},[command] python {},[exp_id] {},[dataset_id] {},[train] {},[val] {},[test] {}\n' \
                 .format(datetime.now().strftime('%Y%m%d-%H%M%S'), 
@@ -82,13 +82,6 @@ def run_inference(model, feature_map, params, args):
         parquet_files = glob.glob(os.path.join(infer_data, "*.parquet"))
         csv_files = glob.glob(os.path.join(infer_data, "*.csv"))
         
-        # Debug: log what files were found
-        if rank == 0:
-            logging.info(f"Found {len(parquet_files)} parquet files, {len(csv_files)} csv files in {infer_data}")
-            if parquet_files:
-                logging.info(f"First 5 parquet files: {[os.path.basename(f) for f in parquet_files[:5]]}")
-                logging.info(f"Last 5 parquet files: {[os.path.basename(f) for f in parquet_files[-5:]]}")
-        
         # Sort files by numeric order (extract number from filename)
         def extract_number(filename):
             import re
@@ -100,12 +93,6 @@ def run_inference(model, feature_map, params, args):
         if parquet_files:
             files = sorted(parquet_files, key=extract_number)
             data_format = 'parquet'
-            # Debug: log sorted order
-            if rank == 0:
-                logging.info(f"Sorted files (first 10):")
-                for i, f in enumerate(files[:10]):
-                    num = extract_number(f)
-                    logging.info(f"  [{i}] {os.path.basename(f)} -> index: {i}, number: {num}")
         elif csv_files:
             files = sorted(csv_files, key=extract_number)
             data_format = 'csv'
@@ -222,12 +209,6 @@ def run_inference(model, feature_map, params, args):
     if rank == 0:
         logging.info('******** Start Inference ********')
         logging.info(f"Results will be saved to directory: {output_dir}")
-        # Debug: list files in output directory to ensure it's clean
-        existing_files = glob.glob(os.path.join(output_dir, "*.parquet"))
-        if existing_files:
-            logging.warning(f"WARNING: Output directory not clean! Found {len(existing_files)} existing files")
-            for f in existing_files[:5]:  # Show first 5 files
-                logging.warning(f"  Found: {os.path.basename(f)}")
     
     import warnings
     from tqdm import tqdm
@@ -247,12 +228,6 @@ def run_inference(model, feature_map, params, args):
     rank_files = []
     file_indices = []  # Store original indices
     
-    # Debug: check what's in files list
-    if rank == 0 and len(files) > 0:
-        logging.info(f"DEBUG: First 3 files in 'files' list:")
-        for i, f in enumerate(files[:3]):
-            logging.info(f"  files[{i}]: {os.path.basename(f)} (full: {f})")
-    
     for i, f in enumerate(files):
         if i % world_size == rank:
             rank_files.append(f)
@@ -261,17 +236,6 @@ def run_inference(model, feature_map, params, args):
     # Log distribution for debugging
     logging.info(f"Rank {rank}: Processing {len(rank_files)} files (indices: {file_indices})")
     
-    # Debug: show which files will be processed
-    if rank == 0 and rank_files:
-        logging.info(f"Rank {rank} will process files:")
-        for idx, f in zip(file_indices[:5], rank_files[:5]):  # Show first 5
-            basename = os.path.basename(f)
-            full_path = f
-            logging.info(f"  Index {idx}: {basename} -> will be saved as part_{idx}_rank{rank}.parquet")
-            logging.info(f"    Full path: {full_path}")
-        if len(rank_files) > 5:
-            logging.info(f"  ... and {len(rank_files) - 5} more files")
-
     if rank_files:
         # Use zip to iterate with both file and original index
         for file_idx, f in zip(file_indices, tqdm(rank_files, desc=f"Inference (Rank {rank})", disable=rank!=0)):
@@ -298,12 +262,8 @@ def run_inference(model, feature_map, params, args):
                 # Ensure num_workers is passed (DataFrameDataLoader defaults to 0)
                 if 'num_workers' not in inference_params:
                     inference_params['num_workers'] = params.get('num_workers', 1)
-                # 强制打印num_workers信息，确保用户能看到
-                logging.info(f"=== DEBUG: Rank {rank} inference parameters ===")
-                logging.info(f"Rank {rank}: num_workers from params: {params.get('num_workers')}")
-                logging.info(f"Rank {rank}: num_workers in inference_params: {inference_params.get('num_workers')}")
-                logging.info(f"Rank {rank}: Using num_workers={inference_params.get('num_workers')} for DataFrameDataLoader")
-                logging.info(f"=== DEBUG: End ===")
+                if rank == 0:
+                    logging.info(f"Rank {rank}: using num_workers={inference_params.get('num_workers')} for inference")
                 test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
 
                 model._verbose = 0
