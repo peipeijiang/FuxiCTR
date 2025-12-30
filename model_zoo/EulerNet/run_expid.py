@@ -134,6 +134,7 @@ def merge_single_file(output_dir, part_num, world_size, timeout=30):
 
 
 def run_inference(model, feature_map, params, args):
+    import torch.distributed as dist  # Import at function start for all ranks to use
     distributed = params.get('distributed', False)
     rank = params.get('distributed_rank', 0)
     world_size = params.get('distributed_world_size', 1)
@@ -314,7 +315,6 @@ def run_inference(model, feature_map, params, args):
 
     # Log num_workers setting before starting inference (before logger.setLevel)
     if rank == 0:
-        import torch.distributed as dist
         num_workers_value = params.get('num_workers', 1)
         batch_size_value = params.get('batch_size', 10000)
         chunk_size_value = params.get('infer_chunk_size', 10000)
