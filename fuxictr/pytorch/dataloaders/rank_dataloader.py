@@ -36,7 +36,17 @@ class _DistributedDataLoaderWrapper:
             if hasattr(self.dataloader, attr):
                 value = getattr(self.dataloader, attr)
                 if isinstance(value, int) and value > 0 and attr != "batch_size":
-                    setattr(self, attr, max(1, math.ceil(value / self.world_size)))
+                    # Streaming dataloaders (ParquetTransformBlockDataLoader, NpzBlockDataLoader)
+                    # already receive filtered data_blocks for each rank, so they calculate
+                    # per-rank batches. We should NOT divide again.
+                    # Check if this is a streaming dataloader by checking for 'num_blocks' attribute
+                    is_streaming_dataloader = hasattr(self.dataloader, 'num_blocks')
+                    if is_streaming_dataloader:
+                        # Already per-rank, don't divide
+                        setattr(self, attr, value)
+                    else:
+                        # Legacy dataloaders calculate total batches, divide by world_size
+                        setattr(self, attr, max(1, math.ceil(value / self.world_size)))
                 else:
                     setattr(self, attr, value)
 
@@ -48,7 +58,12 @@ class _DistributedDataLoaderWrapper:
     def __len__(self):
         if hasattr(self.dataloader, "__len__"):
             base_len = len(self.dataloader)
-            return max(1, math.ceil(base_len / self.world_size)) if base_len else 0
+            # Streaming dataloaders already return per-rank length
+            is_streaming_dataloader = hasattr(self.dataloader, 'num_blocks')
+            if is_streaming_dataloader:
+                return base_len
+            else:
+                return max(1, math.ceil(base_len / self.world_size)) if base_len else 0
         return 0
 
     def __getattr__(self, item):
