@@ -308,7 +308,9 @@ def run_inference(model, feature_map, params, args):
         # Scan all files to get total row counts (for detecting file completion)
         import pyarrow.parquet as pq
         file_total_rows = {}
-        for file_idx, file_path in enumerate(rank_files):
+        # Use zip(file_indices, rank_files) to map original file indices to row counts
+        # This ensures file_total_rows keys match the _file_idx from DataPipe
+        for file_idx, file_path in zip(file_indices, rank_files):
             try:
                 parquet_file = pq.ParquetFile(file_path)
                 file_total_rows[file_idx] = parquet_file.metadata.num_rows
