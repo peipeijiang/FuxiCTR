@@ -1178,354 +1178,326 @@ if selected_model:
                 "logfile": log_path
             })
             
+        # ==================== 进程管理辅助函数 ====================
+        def _verify_process_ownership(pid, username):
+            """验证进程是否属于指定用户"""
+            try:
+                proc = psutil.Process(pid)
+                return proc.username() == username
+            except Exception as e:
+                logging.warning(f"无法验证进程 {pid} 的用户归属: {e}")
+                return False
+
+        def _is_process_group_safe(pgid, username):
+            """检查进程组是否只包含指定用户的进程"""
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-g", str(pgid)],
+                    capture_output=True,
+                    text=True,
+                    stderr=subprocess.DEVNULL
+                )
+                if result.stdout:
+                    pids_in_pg = result.stdout.strip().split()
+                    for proc_pid in pids_in_pg:
+                        try:
+                            proc = psutil.Process(int(proc_pid))
+                            if proc.username() != username:
+                                logging.warning(f"进程组 {pgid} 中包含其他用户的进程 {proc_pid}")
+                                return False
+                        except Exception:
+                            pass
+                return True
+            except Exception:
+                return False
+
+        def _kill_process_tree(pid, username):
+            """终止进程树（主进程及所有子进程）"""
+            try:
+                parent = psutil.Process(pid)
+                all_processes = [parent]
+
+                # 收集所有子进程
+                try:
+                    children = parent.children(recursive=True)
+                    for child in children:
+                        if child.username() == username:
+                            all_processes.append(child)
+                        else:
+                            logging.warning(f"跳过其他用户的子进程: {child.pid}")
+                except Exception:
+                    pass
+
+                # 先尝试正常终止
+                for proc in all_processes:
+                    try:
+                        if proc.username() == username:
+                            proc.terminate()
+                    except Exception:
+                        pass
+
+                # 等待进程退出
+                gone, alive = psutil.wait_procs(all_processes, timeout=3)
+
+                # 强制杀死仍在运行的进程
+                for proc in alive:
+                    try:
+                        if proc.username() == username:
+                            proc.kill()
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logging.warning(f"清理进程树时出错: {e}")
+
+        def _kill_torchrun_processes(username):
+            """清理 torchrun 分布式训练进程"""
+            # 1. 清理 torchrun 主进程及进程组
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-u", username, "-f", "torchrun"],
+                    capture_output=True,
+                    text=True,
+                    stderr=subprocess.DEVNULL
+                )
+                if result.stdout:
+                    torchrun_pids = result.stdout.strip().split()
+                    for torchrun_pid in torchrun_pids:
+                        try:
+                            torchrun_proc = psutil.Process(int(torchrun_pid))
+                            if torchrun_proc.username() == username:
+                                # 杀死 torchrun 主进程
+                                subprocess.run(
+                                    ["kill", "-9", torchrun_pid],
+                                    stderr=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL
+                                )
+                                logging.info(f"已终止 torchrun 主进程: {torchrun_pid}")
+
+                                # 杀死进程组中的所有子进程
+                                try:
+                                    pgid = os.getpgid(int(torchrun_pid))
+                                    result = subprocess.run(
+                                        ["pgrep", "-g", str(pgid)],
+                                        capture_output=True,
+                                        text=True,
+                                        stderr=subprocess.DEVNULL
+                                    )
+                                    if result.stdout:
+                                        for proc_pid in result.stdout.strip().split():
+                                            try:
+                                                proc = psutil.Process(int(proc_pid))
+                                                if proc.username() == username and int(proc_pid) != int(torchrun_pid):
+                                                    subprocess.run(
+                                                        ["kill", "-9", proc_pid],
+                                                        stderr=subprocess.DEVNULL,
+                                                        stdout=subprocess.DEVNULL
+                                                    )
+                                                    logging.info(f"已终止 torchrun 子进程: {proc_pid}")
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # 2. 清理残留的 python run_expid 进程
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-u", username, "-f", "python.*run_expid"],
+                    capture_output=True,
+                    text=True,
+                    stderr=subprocess.DEVNULL
+                )
+                if result.stdout:
+                    for proc_pid in result.stdout.strip().split():
+                        try:
+                            proc = psutil.Process(int(proc_pid))
+                            if proc.username() == username:
+                                subprocess.run(
+                                    ["kill", "-9", proc_pid],
+                                    stderr=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL
+                                )
+                                logging.info(f"已终止残留训练进程: {proc_pid}")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # 3. 清理分布式训练端口进程
+            try:
+                import re
+                result = subprocess.run(
+                    ["pgrep", "-u", username],
+                    capture_output=True,
+                    text=True,
+                    stderr=subprocess.DEVNULL
+                )
+                if result.stdout:
+                    user_pids = set(result.stdout.strip().split())
+                    result = subprocess.run(
+                        ["ss", "-tlnp"],
+                        capture_output=True,
+                        text=True,
+                        stderr=subprocess.DEVNULL
+                    )
+                    if result.stdout:
+                        for line in result.stdout.strip().split('\n'):
+                            if 'LISTEN' in line:
+                                port_match = re.search(r':(\d+)\s', line)
+                                pid_match = re.search(r'pid=(\d+)', line)
+                                if port_match and pid_match:
+                                    port, port_pid = port_match.group(1), pid_match.group(1)
+                                    if port_pid in user_pids:
+                                        try:
+                                            port_proc = psutil.Process(int(port_pid))
+                                            if port_proc.username() == username and int(port) > 10000:
+                                                subprocess.run(
+                                                    ["kill", "-9", port_pid],
+                                                    stderr=subprocess.DEVNULL,
+                                                    stdout=subprocess.DEVNULL
+                                                )
+                                                logging.info(f"已终止分布式端口 {port} 的进程: {port_pid}")
+                                        except Exception:
+                                            pass
+            except Exception:
+                pass
+
+            # 4. 清理孤儿进程
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-u", username],
+                    capture_output=True,
+                    text=True,
+                    stderr=subprocess.DEVNULL
+                )
+                if result.stdout:
+                    for user_pid in result.stdout.strip().split():
+                        try:
+                            proc = psutil.Process(int(user_pid))
+                            cmdline = " ".join(proc.cmdline())
+                            if any(kw in cmdline for kw in ["torchrun", "run_expid", "train", "inference"]):
+                                try:
+                                    parent = proc.parent()
+                                    if not parent or not parent.is_running():
+                                        subprocess.run(
+                                            ["kill", "-9", user_pid],
+                                            stderr=subprocess.DEVNULL,
+                                            stdout=subprocess.DEVNULL
+                                        )
+                                        logging.info(f"已终止孤儿进程: {user_pid}")
+                                except Exception:
+                                    subprocess.run(
+                                        ["kill", "-9", user_pid],
+                                        stderr=subprocess.DEVNULL,
+                                        stdout=subprocess.DEVNULL
+                                    )
+                                    logging.info(f"已终止可能孤儿进程: {user_pid}")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        def _cleanup_lock_files(username, root_dir):
+            """清理用户的锁文件"""
+            try:
+                import glob
+                lock_patterns = [
+                    f"**/{username}_*.lock",
+                    f"**/.inference_lock",
+                    f"**/*.lock"
+                ]
+
+                for pattern in lock_patterns:
+                    for lock_file in glob.glob(os.path.join(root_dir, pattern), recursive=True):
+                        try:
+                            if os.path.exists(lock_file):
+                                file_stat = os.stat(lock_file)
+                                # 删除最近1小时内创建的锁文件
+                                if time.time() - file_stat.st_mtime < 3600:
+                                    os.remove(lock_file)
+                                    logging.info(f"已删除锁文件: {lock_file}")
+                        except Exception as e:
+                            logging.warning(f"删除锁文件 {lock_file} 时出错: {e}")
+            except Exception as e:
+                logging.warning(f"清理锁文件时出错: {e}")
+
+        def _cleanup_gpu_memory():
+            """清理 GPU 内存"""
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        # ==================== 主停止函数 ====================
         def stop_process():
             if st.session_state.run_pid:
                 import logging
                 logging.basicConfig(level=logging.WARNING)
-                
+
                 try:
                     pid = st.session_state.run_pid
-                    current_username = current_user
-                    
-                    # 1. 首先检查进程是否属于当前用户（安全验证）
+                    username = current_user
+
+                    # 1. 验证进程归属
+                    if not _verify_process_ownership(pid, username):
+                        logging.warning(f"安全警告：进程 {pid} 不属于用户 {username}")
+                        return
+
+                    # 2. 使用进程组信号终止（SIGTERM）
                     try:
-                        proc = psutil.Process(pid)
-                        if proc.username() != current_username:
-                            logging.warning(f"安全警告：进程 {pid} 不属于当前用户 {current_username}，跳过停止操作")
-                            return
-                    except Exception as e:
-                        logging.warning(f"无法验证进程 {pid} 的用户归属: {e}")
-                        # 继续执行，但记录警告
-                    
-                    # 2. 使用进程组信号杀死整个进程组（因为使用了 start_new_session=True）
-                    # 先检查进程组是否属于当前用户
-                    try:
-                        # 获取进程组ID
                         pgid = os.getpgid(pid)
-                        # 检查进程组中的所有进程是否都属于当前用户
-                        safe_to_kill_pg = True
-                        try:
-                            # 获取进程组中的所有进程
-                            result = subprocess.run(["pgrep", "-g", str(pgid)], 
-                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                            if result.stdout:
-                                pids_in_pg = result.stdout.strip().split()
-                                for proc_pid in pids_in_pg:
-                                    try:
-                                        proc = psutil.Process(int(proc_pid))
-                                        if proc.username() != current_username:
-                                            safe_to_kill_pg = False
-                                            logging.warning(f"进程组 {pgid} 中包含其他用户的进程 {proc_pid}，跳过进程组信号")
-                                            break
-                                    except:
-                                        pass
-                        except:
-                            pass
-                        
-                        if safe_to_kill_pg:
-                            # 发送 SIGTERM 到整个进程组
+                        if _is_process_group_safe(pgid, username):
                             os.killpg(pgid, signal.SIGTERM)
-                            time.sleep(2)  # 给进程组时间正常退出
+                            time.sleep(2)
                         else:
-                            # 只终止当前进程
                             os.kill(pid, signal.SIGTERM)
                             time.sleep(1)
                     except Exception as e:
                         logging.warning(f"进程组 SIGTERM 失败: {e}")
-                        # 回退到单个进程终止
                         try:
                             os.kill(pid, signal.SIGTERM)
                             time.sleep(1)
-                        except:
+                        except Exception:
                             pass
-                    
-                    # 3. 如果还在运行，强制终止
+
+                    # 3. 强制终止（SIGKILL）
                     try:
-                        # 检查主进程是否还在运行
-                        os.kill(pid, 0)
-                        # 再次检查用户归属
-                        try:
-                            proc = psutil.Process(pid)
-                            if proc.username() == current_username:
-                                # 使用进程组信号（如果安全）或单个进程信号
-                                try:
-                                    pgid = os.getpgid(pid)
-                                    # 检查进程组安全性
-                                    safe = True
-                                    try:
-                                        result = subprocess.run(["pgrep", "-g", str(pgid)], 
-                                                              capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                                        if result.stdout:
-                                            pids_in_pg = result.stdout.strip().split()
-                                            for proc_pid in pids_in_pg:
-                                                try:
-                                                    p = psutil.Process(int(proc_pid))
-                                                    if p.username() != current_username:
-                                                        safe = False
-                                                        break
-                                                except:
-                                                    pass
-                                    except:
-                                        pass
-                                    
-                                    if safe:
-                                        os.killpg(pgid, signal.SIGKILL)
-                                    else:
-                                        os.kill(pid, signal.SIGKILL)
-                                except:
+                        os.kill(pid, 0)  # 检查进程是否还在运行
+                        if _verify_process_ownership(pid, username):
+                            try:
+                                pgid = os.getpgid(pid)
+                                if _is_process_group_safe(pgid, username):
+                                    os.killpg(pgid, signal.SIGKILL)
+                                else:
                                     os.kill(pid, signal.SIGKILL)
-                        except:
-                            os.kill(pid, signal.SIGKILL)
+                            except Exception:
+                                os.kill(pid, signal.SIGKILL)
                     except OSError:
                         pass  # 进程已经退出
                     except Exception as e:
                         logging.warning(f"强制终止失败: {e}")
-                    
-                    # 4. 彻底清理当前用户的所有相关进程
-                    try:
-                        # 获取当前进程及其所有子进程（只清理当前用户的）
-                        parent = psutil.Process(pid)
-                        all_processes = [parent]
-                        try:
-                            children = parent.children(recursive=True)
-                            for child in children:
-                                try:
-                                    if child.username() == current_username:
-                                        all_processes.append(child)
-                                    else:
-                                        logging.warning(f"跳过其他用户的子进程: {child.pid}")
-                                except:
-                                    all_processes.append(child)
-                        except:
-                            pass
-                        
-                        # 先尝试正常终止所有进程
-                        for proc in all_processes:
-                            try:
-                                if proc.username() == current_username:
-                                    proc.terminate()
-                                else:
-                                    logging.warning(f"跳过终止其他用户的进程: {proc.pid}")
-                            except:
-                                pass
-                        
-                        # 等待进程退出
-                        gone, alive = psutil.wait_procs(all_processes, timeout=3)
-                        
-                        # 强制杀死仍在运行的进程（只杀当前用户的）
-                        for proc in alive:
-                            try:
-                                if proc.username() == current_username:
-                                    proc.kill()
-                                else:
-                                    logging.warning(f"跳过强制杀死其他用户的进程: {proc.pid}")
-                            except:
-                                pass
-                    except Exception as e:
-                        logging.warning(f"清理子进程时出错: {e}")
-                    
-                    # 5. 彻底清理 torchrun 分布式训练进程（保留用户隔离）
-                    try:
-                        import subprocess
-                        
-                        # 方法1：彻底清理 torchrun 进程及其所有子进程
-                        try:
-                            # 查找当前用户的所有 torchrun 相关进程
-                            result = subprocess.run(["pgrep", "-u", current_username, "-f", "torchrun"], 
-                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                            if result.stdout:
-                                torchrun_pids = result.stdout.strip().split()
-                                for torchrun_pid in torchrun_pids:
-                                    try:
-                                        # 验证进程属于当前用户
-                                        torchrun_proc = psutil.Process(int(torchrun_pid))
-                                        if torchrun_proc.username() == current_username:
-                                            # 1. 先杀死 torchrun 主进程
-                                            subprocess.run(["kill", "-9", torchrun_pid], 
-                                                         stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                            logging.info(f"已终止 torchrun 主进程: {torchrun_pid}")
-                                            
-                                            # 2. 查找并杀死 torchrun 的所有子进程（分布式训练进程）
-                                            try:
-                                                # 获取 torchrun 进程组中的所有进程
-                                                pgid = os.getpgid(int(torchrun_pid))
-                                                result = subprocess.run(["pgrep", "-g", str(pgid)], 
-                                                                      capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                                                if result.stdout:
-                                                    pids_in_group = result.stdout.strip().split()
-                                                    for proc_pid in pids_in_group:
-                                                        try:
-                                                            proc = psutil.Process(int(proc_pid))
-                                                            # 只杀死当前用户的进程
-                                                            if proc.username() == current_username and int(proc_pid) != int(torchrun_pid):
-                                                                subprocess.run(["kill", "-9", proc_pid], 
-                                                                             stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                                                logging.info(f"已终止 torchrun 子进程: {proc_pid}")
-                                                        except:
-                                                            pass
-                                            except:
-                                                pass
-                                            
-                                            # 3. 查找 torchrun 启动的 python 训练进程
-                                            try:
-                                                # 查找所有 python 进程，检查其父进程是否是 torchrun
-                                                result = subprocess.run(["pgrep", "-u", current_username, "-f", "python"], 
-                                                                      capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                                                if result.stdout:
-                                                    python_pids = result.stdout.strip().split()
-                                                    for python_pid in python_pids:
-                                                        try:
-                                                            python_proc = psutil.Process(int(python_pid))
-                                                            # 检查是否是训练进程（包含 run_expid）
-                                                            cmdline = " ".join(python_proc.cmdline())
-                                                            if "run_expid" in cmdline and python_proc.username() == current_username:
-                                                                # 检查父进程是否是 torchrun 或已经终止
-                                                                try:
-                                                                    parent = python_proc.parent()
-                                                                    if parent and (str(parent.pid) in torchrun_pids or not parent.is_running()):
-                                                                        subprocess.run(["kill", "-9", python_pid], 
-                                                                                     stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                                                        logging.info(f"已终止 torchrun 启动的训练进程: {python_pid}")
-                                                                except:
-                                                                    # 父进程不存在，直接杀死
-                                                                    subprocess.run(["kill", "-9", python_pid], 
-                                                                                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                                                    logging.info(f"已终止孤儿训练进程: {python_pid}")
-                                                        except:
-                                                            pass
-                                            except:
-                                                pass
-                                    except:
-                                        pass
-                        except:
-                            pass
-                        
-                        # 方法2：清理所有残留的 python run_expid 进程
-                        try:
-                            result = subprocess.run(["pgrep", "-u", current_username, "-f", "python.*run_expid"], 
-                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                            if result.stdout:
-                                pids = result.stdout.strip().split()
-                                for proc_pid in pids:
-                                    try:
-                                        proc = psutil.Process(int(proc_pid))
-                                        if proc.username() == current_username:
-                                            subprocess.run(["kill", "-9", proc_pid], 
-                                                         stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                            logging.info(f"已终止残留训练进程: {proc_pid}")
-                                    except:
-                                        pass
-                        except:
-                            pass
-                        
-                        # 方法3：彻底清理分布式训练端口（NCCL、GLOO、TCPStore 等）
-                        try:
-                            # 获取当前用户的所有进程
-                            result = subprocess.run(["pgrep", "-u", current_username], 
-                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                            if result.stdout:
-                                user_pids = set(result.stdout.strip().split())
-                                
-                                # 查找所有监听端口（包括分布式训练使用的端口）
-                                result = subprocess.run(["ss", "-tlnp"], 
-                                                      capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                                if result.stdout:
-                                    lines = result.stdout.strip().split('\n')
-                                    for line in lines:
-                                        if 'LISTEN' in line:
-                                            # 提取端口和PID信息
-                                            import re
-                                            port_match = re.search(r':(\d+)\s', line)
-                                            pid_match = re.search(r'pid=(\d+)', line)
-                                            if port_match and pid_match:
-                                                port = port_match.group(1)
-                                                port_pid = pid_match.group(1)
-                                                # 如果端口进程属于当前用户，杀死它
-                                                if port_pid in user_pids:
-                                                    try:
-                                                        port_proc = psutil.Process(int(port_pid))
-                                                        if port_proc.username() == current_username:
-                                                            # 检查是否是分布式训练相关端口（通常在高端口范围）
-                                                            if int(port) > 10000:
-                                                                subprocess.run(["kill", "-9", port_pid], 
-                                                                             stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                                                logging.info(f"已终止分布式训练端口 {port} 的进程: {port_pid}")
-                                                    except:
-                                                        pass
-                        except:
-                            pass
-                        
-                        # 方法4：清理可能的孤儿进程（父进程已终止但子进程还在运行）
-                        try:
-                            # 查找当前用户的所有进程
-                            result = subprocess.run(["pgrep", "-u", current_username], 
-                                                  capture_output=True, text=True, stderr=subprocess.DEVNULL)
-                            if result.stdout:
-                                all_user_pids = result.stdout.strip().split()
-                                for user_pid in all_user_pids:
-                                    try:
-                                        proc = psutil.Process(int(user_pid))
-                                        # 检查进程是否与训练相关
-                                        cmdline = " ".join(proc.cmdline())
-                                        if any(keyword in cmdline for keyword in ["torchrun", "run_expid", "python", "train", "inference"]):
-                                            # 检查父进程是否存在
-                                            try:
-                                                parent = proc.parent()
-                                                if not parent or not parent.is_running():
-                                                    # 孤儿进程，杀死它
-                                                    subprocess.run(["kill", "-9", user_pid], 
-                                                                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                                    logging.info(f"已终止孤儿进程: {user_pid}")
-                                            except:
-                                                # 无法获取父进程信息，可能是孤儿进程
-                                                subprocess.run(["kill", "-9", user_pid], 
-                                                             stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                                                logging.info(f"已终止可能孤儿进程: {user_pid}")
-                                    except:
-                                        pass
-                        except:
-                            pass
-                        
-                    except Exception as e:
-                        logging.warning(f"清理分布式进程时出错: {e}")
-                    
-                    # 6. 清理当前用户的锁文件
-                    try:
-                        import glob
-                        # 锁文件搜索模式（只搜索当前用户的锁文件）
-                        lock_patterns = [
-                            f"**/{current_user}_*.lock",
-                            f"**/.inference_lock",
-                            f"**/*.lock"
-                        ]
-                        
-                        # 搜索项目根目录下的锁文件
-                        for pattern in lock_patterns:
-                            for lock_file in glob.glob(os.path.join(ROOT_DIR, pattern), recursive=True):
-                                try:
-                                    if os.path.exists(lock_file):
-                                        # 检查锁文件是否与当前进程相关
-                                        file_stat = os.stat(lock_file)
-                                        # 如果文件较新（最近1小时内创建），则删除
-                                        if time.time() - file_stat.st_mtime < 3600:
-                                            os.remove(lock_file)
-                                            logging.info(f"已删除锁文件: {lock_file}")
-                                except Exception as e:
-                                    logging.warning(f"删除锁文件 {lock_file} 时出错: {e}")
-                    except Exception as e:
-                        logging.warning(f"清理锁文件时出错: {e}")
-                    
-                    # 7. 清理GPU内存
-                    try:
-                        import torch
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                    except:
-                        pass
-                    
-                    # 8. 额外等待确保所有资源释放
+
+                    # 4. 清理进程树
+                    _kill_process_tree(pid, username)
+
+                    # 5. 清理 torchrun 分布式进程
+                    _kill_torchrun_processes(username)
+
+                    # 6. 清理锁文件
+                    _cleanup_lock_files(username, ROOT_DIR)
+
+                    # 7. 清理 GPU 内存
+                    _cleanup_gpu_memory()
+
+                    # 8. 等待资源释放
                     time.sleep(1)
-                    
+
                 except Exception as e:
                     logging.warning(f"停止进程时出错: {e}")
                 
