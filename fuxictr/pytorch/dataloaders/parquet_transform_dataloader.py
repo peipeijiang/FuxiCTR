@@ -132,16 +132,20 @@ class ParquetTransformBlockDataLoader(DataLoader):
 
         if split == "test":
             if is_ddp_active and num_workers > 0:
-                # DDP 环境：强制禁用多进程，避免死锁
-                # 多 GPU 并行由 DDP 处理（每张卡处理不同文件），不需要 DataLoader 多进程
-                logging.warning(
-                    f"DDP detected: forcing num_workers=0 (was {num_workers}) "
-                    f"to avoid multiprocessing hang. "
-                    f"Multi-GPU parallelization is handled by DDP. "
-                    f"See: https://github.com/pytorch/pytorch/issues/130610"
-                )
-                num_workers = 0
-                multiprocessing_context = None
+                # DDP 环境：使用 spawn 替代 fork，避免死锁
+                # fork 会复制 NCCL 上下文导致冲突，spawn 创建全新进程避免此问题
+                if multiprocessing_context == 'fork':
+                    logging.warning(
+                        f"DDP + fork + num_workers={num_workers} causes hangs. "
+                        f"Auto-switching to 'spawn' context (requires picklable feature_encoder). "
+                        f"See: https://github.com/pytorch/pytorch/issues/130610"
+                    )
+                    multiprocessing_context = 'spawn'
+                elif multiprocessing_context == 'spawn':
+                    logging.info(
+                        f"Using spawn context with num_workers={num_workers} in DDP mode. "
+                        f"FeatureEncoder is picklable and will be serialized to workers."
+                    )
             elif num_workers > 0 and multiprocessing_context == 'fork':
                 # 非 DDP 但使用 fork：添加警告
                 logging.info(

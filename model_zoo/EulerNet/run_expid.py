@@ -368,7 +368,16 @@ def run_inference(model, feature_map, params, args):
         inference_params['shuffle'] = False
         inference_params['batch_size'] = params.get('batch_size', 10000)
         inference_params['num_workers'] = params.get('num_workers', 0)
-        inference_params['multiprocessing_context'] = 'fork'
+
+        # Default to spawn for distributed inference to avoid DDP+fork conflicts
+        # fork is faster for single GPU/CPU (no module reload overhead)
+        if distributed and world_size > 1:
+            inference_params['multiprocessing_context'] = 'spawn'
+            if rank == 0:
+                logging.info(f"Using 'spawn' multiprocessing context for distributed inference (num_workers={params.get('num_workers', 0)})")
+        else:
+            inference_params['multiprocessing_context'] = 'fork'
+
         inference_params['chunk_size'] = params.get('infer_chunk_size', 10000)  # Default: 10K rows per chunk for memory efficiency
 
         test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
