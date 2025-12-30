@@ -294,7 +294,7 @@ def run_inference(model, feature_map, params, args):
         inference_params['shuffle'] = False
         inference_params['batch_size'] = params.get('batch_size', 10000)
         inference_params['num_workers'] = params.get('num_workers', 0)
-        inference_params['multiprocessing_context'] = 'spawn'
+        inference_params['multiprocessing_context'] = 'fork'
         inference_params['chunk_size'] = params.get('infer_chunk_size', 10000)  # Default: 10K rows per chunk for memory efficiency
 
         test_gen = RankDataLoader(feature_map, stage='test', **inference_params).make_iterator()
@@ -387,12 +387,11 @@ def run_inference(model, feature_map, params, args):
     if rank == 0:
         if has_data:
             logging.info(f"Inference completed. Data saved in: {output_dir}")
-            # Merge all rank files if distributed
-            if distributed and world_size > 1:
-                try:
-                    merge_distributed_results(output_dir, world_size)
-                except Exception as e:
-                    logging.warning(f"Failed to merge distributed results: {e}")
+            # Merge all rank files (both single-GPU and multi-GPU)
+            try:
+                merge_distributed_results(output_dir, world_size)
+            except Exception as e:
+                logging.warning(f"Failed to merge results: {e}")
         else:
             logging.warning("No data found in infer_data!")
         
