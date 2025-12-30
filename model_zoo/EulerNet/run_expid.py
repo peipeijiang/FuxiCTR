@@ -274,6 +274,9 @@ def run_inference(model, feature_map, params, args):
         logging.info(f"Rank {rank}: Skipping {len(completed_files)} completed files: {sorted(completed_files)}")
     logging.info(f"Rank {rank}: Processing {len(rank_files)} files (indices: {file_indices})")
 
+    # Create mapping from block index (in rank_files) to original file index
+    block_idx_to_file_idx = {block_idx: file_idx for block_idx, file_idx in enumerate(file_indices)}
+
     # Log num_workers setting before starting inference (before logger.setLevel)
     if rank == 0:
         num_workers_value = params.get('num_workers', 1)
@@ -308,15 +311,14 @@ def run_inference(model, feature_map, params, args):
         # Scan all files to get total row counts (for detecting file completion)
         import pyarrow.parquet as pq
         file_total_rows = {}
-        # Use zip(file_indices, rank_files) to map original file indices to row counts
-        # This ensures file_total_rows keys match the _file_idx from DataPipe
-        for file_idx, file_path in zip(file_indices, rank_files):
+        # Use block_idx as key (matching _file_idx from DataPipe)
+        for block_idx, file_path in enumerate(rank_files):
             try:
                 parquet_file = pq.ParquetFile(file_path)
-                file_total_rows[file_idx] = parquet_file.metadata.num_rows
+                file_total_rows[block_idx] = parquet_file.metadata.num_rows
             except Exception as e:
                 logging.warning(f"Failed to read metadata for {file_path}: {e}")
-                file_total_rows[file_idx] = 0
+                file_total_rows[block_idx] = 0
 
         if rank == 0:
             logging.info(f"Rank {rank}: Scanned {len(file_total_rows)} files, total rows: {sum(file_total_rows.values())}")
@@ -369,9 +371,12 @@ def run_inference(model, feature_map, params, args):
                     batch_preds = pred_dict["y_pred"].data.cpu().numpy().reshape(-1)
 
                 # Split predictions by file and accumulate directly to file_writers
-                for f_idx in file_indices_in_batch:
+                for block_idx in file_indices_in_batch:
+                    # Convert block_idx to original file index
+                    original_file_idx = block_idx_to_file_idx.get(block_idx, block_idx)
+                    
                     # Find rows belonging to this file
-                    mask = file_idx_arr == f_idx
+                    mask = file_idx_arr == block_idx
                     f_preds = batch_preds[mask]
                     f_count = len(f_preds)
 
@@ -390,34 +395,35 @@ def run_inference(model, feature_map, params, args):
                         result_df[col] = vals
 
                     # Accumulate directly to file_writers (no intermediate batch_buffer)
-                    part_file = os.path.join(output_dir, f"part_{f_idx}_rank{rank}.parquet")
-                    if f_idx in file_writers:
-                        file_writers[f_idx]['data'].append(result_df)
-                        file_writers[f_idx]['count'] += f_count
+                    part_file = os.path.join(output_dir, f"part_{original_file_idx}_rank{rank}.parquet")
+                    if original_file_idx in file_writers:
+                        file_writers[original_file_idx]['data'].append(result_df)
+                        file_writers[original_file_idx]['count'] += f_count
                     else:
-                        file_writers[f_idx] = {
+                        file_writers[original_file_idx] = {
                             'data': [result_df],
                             'count': f_count,
                             'file': part_file
                         }
 
                     # Track processed rows
-                    file_processed_rows[f_idx] = file_processed_rows.get(f_idx, 0) + f_count
+                    file_processed_rows[block_idx] = file_processed_rows.get(block_idx, 0) + f_count
 
                     # Check if file is complete and write immediately
-                    if file_processed_rows[f_idx] >= file_total_rows[f_idx]:
+                    # Only check if we have valid row count (> 0)
+                    if file_total_rows.get(block_idx, 0) > 0 and file_processed_rows[block_idx] >= file_total_rows[block_idx]:
                         # File complete: write and free memory
-                        finalize_files({f_idx: file_writers[f_idx]})
-                        del file_writers[f_idx]  # Free memory immediately
+                        finalize_files({original_file_idx: file_writers[original_file_idx]})
+                        del file_writers[original_file_idx]  # Free memory immediately
 
                         # Immediately finalize this file (simple rename, no merge needed)
                         # Each file is processed by only one rank, so just rename temp → final
-                        temp_file = os.path.join(output_dir, f"part_{f_idx}_rank{rank}.parquet")
-                        final_file = os.path.join(output_dir, f"part_{f_idx}.parquet")
+                        temp_file = os.path.join(output_dir, f"part_{original_file_idx}_rank{rank}.parquet")
+                        final_file = os.path.join(output_dir, f"part_{original_file_idx}.parquet")
 
                         if os.path.exists(temp_file):
                             os.rename(temp_file, final_file)
-                            logging.info(f"Rank {rank}: Finalized part_{f_idx}.parquet")
+                            logging.info(f"Rank {rank}: Finalized part_{original_file_idx}.parquet")
 
                         # Synchronize all ranks after each file completion
                         if distributed and dist.is_initialized():
