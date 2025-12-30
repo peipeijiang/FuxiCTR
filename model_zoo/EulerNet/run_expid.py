@@ -79,6 +79,60 @@ def run_train(model, feature_map, params, args):
                         ' '.join(sys.argv), args['expid'], params['dataset_id'],
                         "N.A.", print_to_list(valid_result), print_to_list(test_result)))
 
+
+def get_completed_files(output_dir):
+    """扫描已完成的文件（part_N.parquet）"""
+    import glob
+    import re
+    completed_files = set()
+    if not os.path.exists(output_dir):
+        return completed_files
+    for f in glob.glob(os.path.join(output_dir, "part_*.parquet")):
+        match = re.match(r'part_(\d+)\.parquet', os.path.basename(f))
+        if match:
+            completed_files.add(int(match.group(1)))
+    return completed_files
+
+
+def merge_single_file(output_dir, part_num, world_size, timeout=30):
+    """合并单个文件的所有 rank 结果"""
+    import glob
+    import pandas as pd
+    import time
+    import logging
+
+    start_time = time.time()
+
+    # 等待所有 rank 的临时文件生成
+    while time.time() - start_time < timeout:
+        rank_files = glob.glob(os.path.join(output_dir, f"part_{part_num}_rank*.parquet"))
+        if len(rank_files) >= world_size:
+            break
+        time.sleep(0.5)
+
+    # 再次检查文件数量
+    rank_files = glob.glob(os.path.join(output_dir, f"part_{part_num}_rank*.parquet"))
+    if not rank_files:
+        logging.warning(f"No rank files found for part_{part_num}")
+        return
+
+    # 合并
+    dfs = []
+    for f in sorted(rank_files):
+        try:
+            df = pd.read_parquet(f)
+            dfs.append(df)
+            os.remove(f)  # 删除临时文件
+        except Exception as e:
+            logging.warning(f"Failed to read or remove {f}: {e}")
+
+    if dfs:
+        merged_df = pd.concat(dfs, ignore_index=True)
+        merged_file = os.path.join(output_dir, f"part_{part_num}.parquet")
+        merged_df.to_parquet(merged_file, index=False)
+        logging.info(f"Merged part_{part_num} ({len(dfs)} ranks) → {merged_file}")
+
+
 def run_inference(model, feature_map, params, args):
     distributed = params.get('distributed', False)
     rank = params.get('distributed_rank', 0)
@@ -166,31 +220,24 @@ def run_inference(model, feature_map, params, args):
                             os.remove(lock_file)
                         else:
                             raise RuntimeError(f"Inference already running (lock file: {lock_file}, age: {lock_age:.0f}s)")
-                
-                if os.path.exists(output_dir):
-                    # First remove all files
-                    for root, dirs, walk_files in os.walk(output_dir):
-                        for file_to_remove in walk_files:
-                            try:
-                                os.remove(os.path.join(root, file_to_remove))
-                            except:
-                                pass
-                    # Then remove directory
-                    import shutil
-                    shutil.rmtree(output_dir)
-                    time.sleep(2)  # Wait for filesystem
-                
-                # Create fresh directory
-                os.makedirs(output_dir, exist_ok=True)
-                
+
+                # Create directory if not exists (preserve existing files for resume)
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                else:
+                    # Check for completed files (resume mode)
+                    completed = get_completed_files(output_dir)
+                    if completed:
+                        logging.info(f"Resume mode: {len(completed)} files already completed: {sorted(completed)}")
+
                 # Create lock file
                 with open(lock_file, 'w') as f:
                     f.write(f"PID: {os.getpid()}, Time: {time.time()}")
-            
-            # ALL ranks wait for directory to be created
+
+            # ALL ranks wait for directory to be ready
             if distributed and dist.is_initialized():
                 distributed_barrier()
-            
+
             # Double-check directory exists for all ranks
             if not os.path.exists(output_dir):
                 # Try to create it if it doesn't exist (should only happen if rank 0 failed)
@@ -198,13 +245,13 @@ def run_inference(model, feature_map, params, args):
                     os.makedirs(output_dir, exist_ok=True)
                 except:
                     pass
-            
+
             # Verify directory exists
             if not os.path.exists(output_dir):
                 raise RuntimeError(f"Output directory does not exist: {output_dir}")
-            
+
             if rank == 0:
-                logging.info(f"Output directory cleaned and locked: {output_dir}")
+                logging.info(f"Output directory ready: {output_dir}")
             
             break
         except Exception as e:
@@ -236,18 +283,33 @@ def run_inference(model, feature_map, params, args):
     if rank == 0:
         logging.info(f"Total files to process: {len(files)}")
         logging.info(f"World size: {world_size}, Rank: {rank}")
-    
+
+    # Get completed files for resume mode
+    completed_files = get_completed_files(output_dir) if rank == 0 else set()
+
+    # Broadcast completed files to all ranks (for distributed inference)
+    if distributed and dist.is_initialized():
+        completed_list = list(completed_files)
+        shared = [completed_list]
+        dist.broadcast_object_list(shared, src=0)
+        completed_files = set(shared[0])
+
     # Distribute files across ranks for parallel processing
     # Create mapping of file to its original index
     rank_files = []
     file_indices = []  # Store original indices
-    
+
     for i, f in enumerate(files):
+        # Skip completed files (resume mode)
+        if i in completed_files:
+            continue
         if i % world_size == rank:
             rank_files.append(f)
             file_indices.append(i)  # Save original index
-    
+
     # Log distribution for debugging
+    if completed_files:
+        logging.info(f"Rank {rank}: Skipping {len(completed_files)} completed files: {sorted(completed_files)}")
     logging.info(f"Rank {rank}: Processing {len(rank_files)} files (indices: {file_indices})")
 
     # Log num_workers setting before starting inference (before logger.setLevel)
@@ -372,6 +434,14 @@ def run_inference(model, feature_map, params, args):
                         finalize_files({f_idx: file_writers[f_idx]})
                         del file_writers[f_idx]  # Free memory immediately
 
+                        # Immediately merge this file (only rank 0 executes)
+                        if rank == 0:
+                            merge_single_file(output_dir, f_idx, world_size)
+
+                        # Synchronize all ranks after each file completion
+                        if distributed and dist.is_initialized():
+                            distributed_barrier()
+
                 has_data = True
 
         finally:
@@ -387,11 +457,11 @@ def run_inference(model, feature_map, params, args):
     if rank == 0:
         if has_data:
             logging.info(f"Inference completed. Data saved in: {output_dir}")
-            # Merge all rank files (both single-GPU and multi-GPU)
+            # Merge any remaining rank files (should be empty if all files were merged immediately)
             try:
                 merge_distributed_results(output_dir, world_size)
             except Exception as e:
-                logging.warning(f"Failed to merge results: {e}")
+                logging.warning(f"Failed to merge remaining results: {e}")
         else:
             logging.warning("No data found in infer_data!")
         
