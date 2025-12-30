@@ -314,14 +314,26 @@ def run_inference(model, feature_map, params, args):
 
     # Log num_workers setting before starting inference (before logger.setLevel)
     if rank == 0:
+        import torch.distributed as dist
         num_workers_value = params.get('num_workers', 1)
         batch_size_value = params.get('batch_size', 10000)
         chunk_size_value = params.get('infer_chunk_size', 10000)
         data_loader_type = "ParquetTransformBlockDataLoader (streaming)"
+
+        # 检测 DDP 状态
+        is_ddp = distributed and dist.is_initialized()
+
         logging.info(f"=" * 60)
         logging.info(f"Rank {rank}: Inference Configuration:")
         logging.info(f"  - DataLoader: {data_loader_type}")
-        logging.info(f"  - Num Workers: {num_workers_value} (from app.py/frontend setting)")
+        logging.info(f"  - Distributed: {distributed}")
+        logging.info(f"  - DDP initialized: {is_ddp}")
+        logging.info(f"  - Num Workers: {num_workers_value}")
+        if is_ddp and num_workers_value > 0:
+            logging.warning(
+                f"  ⚠️  DDP + num_workers={num_workers_value} may cause hangs. "
+                f"DataLoader will auto-adjust to num_workers=0"
+            )
         logging.info(f"  - Batch Size: {batch_size_value}")
         logging.info(f"  - Chunk Size: {chunk_size_value} (rows per chunk for memory optimization)")
         logging.info(f"  - Files to process: {len(rank_files)}")

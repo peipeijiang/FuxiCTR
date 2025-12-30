@@ -121,6 +121,35 @@ class ParquetTransformBlockDataLoader(DataLoader):
             data_blocks = list(enumerate(sorted(glob.glob(data_path))))
         assert len(data_blocks) > 0, f"invalid data_path: {data_path}"
 
+        # ========== 自适应 DataLoader 策略 ==========
+        # 检测 DDP 环境，避免 DDP + DataLoader 多进程死锁
+        # 参考：https://github.com/pytorch/pytorch/issues/130610
+        try:
+            import torch.distributed as dist
+            is_ddp_active = dist.is_initialized()
+        except:
+            is_ddp_active = False
+
+        if split == "test":
+            if is_ddp_active and num_workers > 0:
+                # DDP 环境：强制禁用多进程，避免死锁
+                # 多 GPU 并行由 DDP 处理（每张卡处理不同文件），不需要 DataLoader 多进程
+                logging.warning(
+                    f"DDP detected: forcing num_workers=0 (was {num_workers}) "
+                    f"to avoid multiprocessing hang. "
+                    f"Multi-GPU parallelization is handled by DDP. "
+                    f"See: https://github.com/pytorch/pytorch/issues/130610"
+                )
+                num_workers = 0
+                multiprocessing_context = None
+            elif num_workers > 0 and multiprocessing_context == 'fork':
+                # 非 DDP 但使用 fork：添加警告
+                logging.info(
+                    f"Using num_workers={num_workers} with fork context. "
+                    f"If hangs occur, try num_workers=0 or multiprocessing_context='spawn'"
+                )
+        # =============================================
+
         # In test/inference we preserve order by default; allow multi-worker if caller insists
         worker_num = kwargs.get("num_workers", num_workers)
         if split == "test" and shuffle:
