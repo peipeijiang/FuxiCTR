@@ -132,26 +132,20 @@ class ParquetTransformBlockDataLoader(DataLoader):
 
         if split == "test":
             if is_ddp_active and num_workers > 0:
-                # DDP 环境：使用 spawn 替代 fork，避免死锁
-                # fork 会复制 NCCL 上下文导致冲突，spawn 创建全新进程避免此问题
-                if multiprocessing_context == 'fork':
-                    logging.warning(
-                        f"DDP + fork + num_workers={num_workers} causes hangs. "
-                        f"Auto-switching to 'spawn' context (requires picklable feature_encoder). "
-                        f"See: https://github.com/pytorch/pytorch/issues/130610"
-                    )
-                    multiprocessing_context = 'spawn'
-                elif multiprocessing_context == 'spawn':
-                    logging.info(
-                        f"Using spawn context with num_workers={num_workers} in DDP mode. "
-                        f"FeatureEncoder is picklable and will be serialized to workers."
-                    )
-            elif num_workers > 0 and multiprocessing_context == 'fork':
-                # 非 DDP 但使用 fork：添加警告
-                logging.info(
-                    f"Using num_workers={num_workers} with fork context. "
-                    f"If hangs occur, try num_workers=0 or multiprocessing_context='spawn'"
+                # DDP 环境：强制禁用 DataLoader 多进程
+                # 原因：spawn + num_workers>0 + DDP 会导致 worker 进程段错误（segfault）
+                # fork + num_workers>0 + DDP 会导致死锁（NCCL 上下文冲突）
+                # 稳定方案：主进程串行加载数据，GPU 并行推理
+                # 参考：https://github.com/pytorch/pytorch/issues/130610
+                logging.warning(
+                    f"DDP detected: forcing num_workers=0 (was {num_workers}) to avoid worker crashes. "
+                    f"spawn + num_workers>0 + DDP causes segfaults. "
+                    f"Data will be loaded sequentially in the main process. "
+                    f"See: https://github.com/pytorch/pytorch/issues/130610"
                 )
+                num_workers = 0
+                multiprocessing_context = None
+                worker_num = 0
         # =============================================
 
         # In test/inference we preserve order by default; allow multi-worker if caller insists
