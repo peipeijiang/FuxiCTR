@@ -94,45 +94,6 @@ def get_completed_files(output_dir):
     return completed_files
 
 
-def merge_single_file(output_dir, part_num, world_size, timeout=30):
-    """合并单个文件的所有 rank 结果"""
-    import glob
-    import pandas as pd
-    import time
-    import logging
-
-    start_time = time.time()
-
-    # 等待所有 rank 的临时文件生成
-    while time.time() - start_time < timeout:
-        rank_files = glob.glob(os.path.join(output_dir, f"part_{part_num}_rank*.parquet"))
-        if len(rank_files) >= world_size:
-            break
-        time.sleep(0.5)
-
-    # 再次检查文件数量
-    rank_files = glob.glob(os.path.join(output_dir, f"part_{part_num}_rank*.parquet"))
-    if not rank_files:
-        logging.warning(f"No rank files found for part_{part_num}")
-        return
-
-    # 合并
-    dfs = []
-    for f in sorted(rank_files):
-        try:
-            df = pd.read_parquet(f)
-            dfs.append(df)
-            os.remove(f)  # 删除临时文件
-        except Exception as e:
-            logging.warning(f"Failed to read or remove {f}: {e}")
-
-    if dfs:
-        merged_df = pd.concat(dfs, ignore_index=True)
-        merged_file = os.path.join(output_dir, f"part_{part_num}.parquet")
-        merged_df.to_parquet(merged_file, index=False)
-        logging.info(f"Merged part_{part_num} ({len(dfs)} ranks) → {merged_file}")
-
-
 def run_inference(model, feature_map, params, args):
     import torch.distributed as dist  # Import at function start for all ranks to use
     distributed = params.get('distributed', False)
@@ -455,9 +416,14 @@ def run_inference(model, feature_map, params, args):
                         finalize_files({f_idx: file_writers[f_idx]})
                         del file_writers[f_idx]  # Free memory immediately
 
-                        # Immediately merge this file (only rank 0 executes)
-                        if rank == 0:
-                            merge_single_file(output_dir, f_idx, world_size)
+                        # Immediately finalize this file (simple rename, no merge needed)
+                        # Each file is processed by only one rank, so just rename temp → final
+                        temp_file = os.path.join(output_dir, f"part_{f_idx}_rank{rank}.parquet")
+                        final_file = os.path.join(output_dir, f"part_{f_idx}.parquet")
+
+                        if os.path.exists(temp_file):
+                            os.rename(temp_file, final_file)
+                            logging.info(f"Rank {rank}: Finalized part_{f_idx}.parquet")
 
                         # Synchronize all ranks after each file completion
                         if distributed and dist.is_initialized():
@@ -478,11 +444,16 @@ def run_inference(model, feature_map, params, args):
     if rank == 0:
         if has_data:
             logging.info(f"Inference completed. Data saved in: {output_dir}")
-            # Merge any remaining rank files (should be empty if all files were merged immediately)
-            try:
-                merge_distributed_results(output_dir, world_size)
-            except Exception as e:
-                logging.warning(f"Failed to merge remaining results: {e}")
+            # Clean up any remaining temp files (should be empty if all finalized immediately)
+            remaining_temp_files = glob.glob(os.path.join(output_dir, "part_*_rank*.parquet"))
+            if remaining_temp_files:
+                logging.warning(f"Found {len(remaining_temp_files)} unfinalized temp files, merging...")
+                try:
+                    merge_distributed_results(output_dir, world_size)
+                except Exception as e:
+                    logging.warning(f"Failed to merge remaining results: {e}")
+            else:
+                logging.info("All files finalized successfully during inference")
         else:
             logging.warning("No data found in infer_data!")
         
