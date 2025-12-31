@@ -363,13 +363,19 @@ def run_inference(model, feature_map, params, args):
         file_processed_rows = {}
         # Track last logged progress percentage per file to avoid log spam
         file_progress_logged = {}
-        # Optional tqdm progress bars per file (only rank 0 to avoid clutter)
-        file_progress_bars = {}
+        # State for single-line file progress (rank0 + TTY)
+        file_progress_line_len = 0
+        file_progress_current = None
         # Accumulate predictions directly in file_writers (no batch_buffer)
         file_writers = {}
 
         try:
-            for batch_data in tqdm(test_gen, desc=f"Inference (Rank {rank})", disable=rank!=0):
+            is_tty = sys.stdout.isatty()
+            tqdm_disable = rank != 0 or not is_tty
+            for batch_data in tqdm(test_gen,
+                                   desc=f"Inference (Rank {rank})",
+                                   disable=tqdm_disable,
+                                   dynamic_ncols=True):
                 if _stop_event.is_set():
                     logging.warning(f"Rank {rank}: Stop requested, exiting inference loop")
                     break
@@ -440,30 +446,29 @@ def run_inference(model, feature_map, params, args):
                         progress_pct = min(100, int(file_processed_rows[block_idx] * 100 / total_rows))
                         last_pct = file_progress_logged.get(block_idx, -1)
 
-                        # Per-file tqdm progress bar (rank 0 only)
-                        if rank == 0:
-                            bar = file_progress_bars.get(original_file_idx)
-                            if bar is None:
-                                bar = tqdm(
-                                    total=total_rows,
-                                    desc=f"part_{original_file_idx} (rank {rank})",
-                                    position=1 + (original_file_idx % 10),  # spread bars a bit
-                                    leave=False,
-                                    unit="rows"
+                        # Rank0 + TTY: update a single-line file progress to avoid multiple lines
+                        if rank == 0 and is_tty:
+                            msg = f"\r[Rank {rank}] part_{original_file_idx} {progress_pct}% ({file_processed_rows[block_idx]}/{total_rows} rows)"
+                            pad = max(0, file_progress_line_len - len(msg))
+                            sys.stdout.write(msg + (" " * pad))
+                            sys.stdout.flush()
+                            file_progress_line_len = len(msg)
+                            file_progress_current = original_file_idx
+                            # Only log at completion to keep log clean
+                            if progress_pct == 100 and last_pct < 100:
+                                logging.info(
+                                    f"Rank {rank}: File part_{original_file_idx} progress {progress_pct}% "
+                                    f"({file_processed_rows[block_idx]}/{total_rows} rows)"
                                 )
-                                file_progress_bars[original_file_idx] = bar
-                            # Update bar to current count
-                            delta = file_processed_rows[block_idx] - bar.n
-                            if delta > 0:
-                                bar.update(delta)
-
-                        # Log every 10% or on completion to show file-level progress
-                        if progress_pct >= last_pct + 10 or progress_pct == 100:
-                            logging.info(
-                                f"Rank {rank}: File part_{original_file_idx} progress {progress_pct}% "
-                                f"({file_processed_rows[block_idx]}/{total_rows} rows)"
-                            )
-                            file_progress_logged[block_idx] = progress_pct
+                                file_progress_logged[block_idx] = progress_pct
+                        else:
+                            # Non-TTY or non-rank0: log every 10% or on completion
+                            if progress_pct >= last_pct + 10 or progress_pct == 100:
+                                logging.info(
+                                    f"Rank {rank}: File part_{original_file_idx} progress {progress_pct}% "
+                                    f"({file_processed_rows[block_idx]}/{total_rows} rows)"
+                                )
+                                file_progress_logged[block_idx] = progress_pct
 
                     # Check if file is complete and write immediately
                     # Only check if we have valid row count (> 0)
@@ -480,6 +485,12 @@ def run_inference(model, feature_map, params, args):
                         if os.path.exists(temp_file):
                             os.rename(temp_file, final_file)
                             logging.info(f"Rank {rank}: Finalized part_{original_file_idx}.parquet")
+                            # Finish the single-line display for this file
+                            if rank == 0 and is_tty and file_progress_current == original_file_idx:
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                                file_progress_line_len = 0
+                                file_progress_current = None
 
                         # Synchronize all ranks after each file completion
                         if distributed and dist.is_initialized():
@@ -491,11 +502,6 @@ def run_inference(model, feature_map, params, args):
             # Finalize any remaining files (should be empty if all files completed)
             finalize_files(file_writers)
             file_writers.clear()
-
-            # Close any open progress bars
-            for bar in file_progress_bars.values():
-                bar.close()
-            file_progress_bars.clear()
 
             logger.setLevel(original_level)
 
