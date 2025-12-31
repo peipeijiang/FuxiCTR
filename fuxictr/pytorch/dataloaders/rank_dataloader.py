@@ -166,6 +166,10 @@ class RankDataLoader(object):
     def _wrap_distributed(self, generator):
         if not self._distributed or generator is None:
             return generator
+        # Streaming dataloaders (e.g., ParquetTransformBlockDataLoader/NpzBlockDataLoader)
+        # are already sharded by rank via data_blocks; avoid extra idx%world_size filtering.
+        if hasattr(generator, "num_blocks"):
+            return generator
         # 使用 DistributedSampler 时无需再 wrap（当前 DataLoader 暂未集成 sampler，保留兼容）
         if hasattr(generator, "sampler") and isinstance(generator.sampler, DistributedSampler):
             return generator

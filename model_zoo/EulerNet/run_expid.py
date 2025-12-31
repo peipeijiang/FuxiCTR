@@ -343,6 +343,10 @@ def run_inference(model, feature_map, params, args):
 
         # Track processed rows per file to detect completion
         file_processed_rows = {}
+        # Track last logged progress percentage per file to avoid log spam
+        file_progress_logged = {}
+        # Optional tqdm progress bars per file (only rank 0 to avoid clutter)
+        file_progress_bars = {}
         # Accumulate predictions directly in file_writers (no batch_buffer)
         file_writers = {}
 
@@ -409,6 +413,37 @@ def run_inference(model, feature_map, params, args):
                     # Track processed rows
                     file_processed_rows[block_idx] = file_processed_rows.get(block_idx, 0) + f_count
 
+                    # Progress logging per file (only when metadata is available)
+                    total_rows = file_total_rows.get(block_idx, 0)
+                    if total_rows > 0:
+                        progress_pct = min(100, int(file_processed_rows[block_idx] * 100 / total_rows))
+                        last_pct = file_progress_logged.get(block_idx, -1)
+
+                        # Per-file tqdm progress bar (rank 0 only)
+                        if rank == 0:
+                            bar = file_progress_bars.get(original_file_idx)
+                            if bar is None:
+                                bar = tqdm(
+                                    total=total_rows,
+                                    desc=f"part_{original_file_idx} (rank {rank})",
+                                    position=1 + (original_file_idx % 10),  # spread bars a bit
+                                    leave=False,
+                                    unit="rows"
+                                )
+                                file_progress_bars[original_file_idx] = bar
+                            # Update bar to current count
+                            delta = file_processed_rows[block_idx] - bar.n
+                            if delta > 0:
+                                bar.update(delta)
+
+                        # Log every 10% or on completion to show file-level progress
+                        if progress_pct >= last_pct + 10 or progress_pct == 100:
+                            logging.info(
+                                f"Rank {rank}: File part_{original_file_idx} progress {progress_pct}% "
+                                f"({file_processed_rows[block_idx]}/{total_rows} rows)"
+                            )
+                            file_progress_logged[block_idx] = progress_pct
+
                     # Check if file is complete and write immediately
                     # Only check if we have valid row count (> 0)
                     if file_total_rows.get(block_idx, 0) > 0 and file_processed_rows[block_idx] >= file_total_rows[block_idx]:
@@ -435,6 +470,11 @@ def run_inference(model, feature_map, params, args):
             # Finalize any remaining files (should be empty if all files completed)
             finalize_files(file_writers)
             file_writers.clear()
+
+            # Close any open progress bars
+            for bar in file_progress_bars.values():
+                bar.close()
+            file_progress_bars.clear()
 
             logger.setLevel(original_level)
 
