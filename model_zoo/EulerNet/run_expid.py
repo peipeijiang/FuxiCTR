@@ -42,6 +42,8 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributed as dist
+import signal
+import threading
 
 
 def finalize_files(file_writers):
@@ -51,6 +53,21 @@ def finalize_files(file_writers):
             # Concatenate all batches and write once
             final_df = pd.concat(buffer_info['data'], ignore_index=True)
             final_df.to_parquet(buffer_info['file'], index=False)
+
+
+_stop_event = threading.Event()
+
+
+def _install_signal_handlers():
+    """Install SIGINT/SIGTERM handlers to allow graceful stop from UI/CLI."""
+    def _handle(sig, frame):
+        logging.warning(f"Received signal {sig}, requesting stop...")
+        _stop_event.set()
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(s, _handle)
+        except Exception:
+            pass
 
 
 def run_train(model, feature_map, params, args):
@@ -95,6 +112,7 @@ def get_completed_files(output_dir):
 
 
 def run_inference(model, feature_map, params, args):
+    _install_signal_handlers()
     import torch.distributed as dist  # Import at function start for all ranks to use
     distributed = params.get('distributed', False)
     rank = params.get('distributed_rank', 0)
@@ -352,6 +370,9 @@ def run_inference(model, feature_map, params, args):
 
         try:
             for batch_data in tqdm(test_gen, desc=f"Inference (Rank {rank})", disable=rank!=0):
+                if _stop_event.is_set():
+                    logging.warning(f"Rank {rank}: Stop requested, exiting inference loop")
+                    break
                 # Extract file index and IDs from batch
                 file_idx_arr = batch_data.pop("_file_idx", None)
                 if file_idx_arr is None:
@@ -478,7 +499,7 @@ def run_inference(model, feature_map, params, args):
 
             logger.setLevel(original_level)
 
-    if distributed and dist.is_initialized():
+    if distributed and dist.is_initialized() and not _stop_event.is_set():
         distributed_barrier()
     
     if rank == 0:
