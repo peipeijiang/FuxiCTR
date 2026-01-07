@@ -162,8 +162,8 @@ class MultiTaskModel(BaseModel):
                 y_pred = self._gather_numpy(y_pred)
                 y_true = self._gather_numpy(y_true)
 
-                # Mask out labels with value -1
-                mask = y_true != -1
+                # Mask out labels with value not 0 or 1
+                mask = (y_true == 0) | (y_true == 1)
                 y_true = y_true[mask]
                 y_pred = y_pred[mask]
                 group_id_i = group_id[mask] if group_id is not None else None

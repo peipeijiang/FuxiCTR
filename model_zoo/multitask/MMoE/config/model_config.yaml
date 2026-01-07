@@ -43,7 +43,7 @@ MMoE_default:
 ### ModelName_test: This is a config for test only
 MMoE_test:
     model: MMoE
-    dataset_id: tiny_mtl
+    dataset_id: all_seeds_processed
     loss: ['binary_crossentropy','binary_crossentropy']
     metrics: ['logloss', 'AUC']
     task: ['binary_classification','binary_classification']
