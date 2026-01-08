@@ -156,7 +156,13 @@ class MultiTaskModel(BaseModel):
 
     def compile(self, optimizer, loss, lr):
         # Collect parameters for optimizer
-        params_list = [{'params': self.parameters()}]
+        special_params = set()
+        if self.awl is not None:
+            special_params.update(id(p) for p in self.awl.parameters())
+        if self.gradnorm is not None:
+            special_params.update(id(p) for p in self.gradnorm.parameters())
+
+        params_list = [{'params': [p for p in self.parameters() if id(p) not in special_params]}]
         
         # Add AWL/GradNorm parameters with no weight decay
         if self.awl is not None:
