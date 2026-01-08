@@ -16,6 +16,7 @@
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 import numpy as np
 import torch
 import os, sys
@@ -23,7 +24,65 @@ import logging
 from fuxictr.pytorch.models import BaseModel
 from fuxictr.pytorch.torch_utils import get_device, get_optimizer, get_loss, get_regularizer
 from tqdm import tqdm
-from collections import defaultdict
+from collections import defaultdict, deque
+
+
+class AutomaticWeightedLoss(nn.Module):
+    """Automatically weighted multi-task loss using uncertainty weighting.
+    
+    Reference: "Multi-Task Learning Using Uncertainty to Weigh Losses for Scene Geometry and Semantics"
+    https://arxiv.org/abs/1705.07115
+    
+    Params:
+        num: int, the number of losses
+    
+    Examples:
+        loss1 = F.binary_cross_entropy(pred1, target1)
+        loss2 = F.binary_cross_entropy(pred2, target2)
+        awl = AutomaticWeightedLoss(2)
+        loss_sum = awl(loss1, loss2)
+    """
+    def __init__(self, num=2):
+        super(AutomaticWeightedLoss, self).__init__()
+        params = torch.ones(num, requires_grad=True)
+        self.params = torch.nn.Parameter(params)  # log variance parameters
+    
+    def forward(self, *losses):
+        loss_sum = 0
+        for i, loss in enumerate(losses):
+            precision = torch.exp(-self.params[i])
+            loss_sum += 0.5 * precision * loss + 0.5 * self.params[i]
+        return loss_sum
+
+
+class GradNorm(nn.Module):
+    """Gradient Normalization for adaptive loss balancing in multi-task learning.
+    
+    Reference: "GradNorm: Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks"
+    (ICML 2018) http://proceedings.mlr.press/v80/chen18a/chen18a.pdf
+    
+    Args:
+        num_tasks: int, number of tasks
+        alpha: float, the strength of the restoring force (default=1.5)
+        
+    The method dynamically adjusts task weights by:
+    1. Computing gradient norms for each task
+    2. Balancing gradients based on relative training rates
+    3. Using an asymmetry parameter alpha to control adaptation speed
+    """
+    def __init__(self, num_tasks=2, alpha=1.5):
+        super(GradNorm, self).__init__()
+        self.num_tasks = num_tasks
+        self.alpha = alpha
+        # Initialize loss scale parameters
+        self.loss_scale = nn.Parameter(torch.ones(num_tasks, requires_grad=True))
+        # Buffer to store initial losses for computing relative training rates
+        self.register_buffer('initial_losses', torch.zeros(num_tasks))
+        self.register_buffer('has_initial_losses', torch.tensor(False))
+        
+    def get_loss_weights(self):
+        """Get current loss weights (normalized)."""
+        return F.softmax(self.loss_scale, dim=-1) * self.num_tasks
 
 
 class MultiTaskModel(BaseModel):
@@ -61,6 +120,32 @@ class MultiTaskModel(BaseModel):
         self.device = get_device(gpu)
         self.num_tasks = num_tasks
         self.loss_weight = loss_weight
+        
+        # Initialize loss weighting method
+        self.awl = None
+        self.gradnorm = None
+        self.manual_weights = None
+        
+        # Parse loss_weight parameter
+        if self.loss_weight == 'UW':  # UW = Uncertainty Weighting
+            self.awl = AutomaticWeightedLoss(num_tasks)
+            self.awl.to(self.device)
+            self._log(f'Using Uncertainty Weighting for {num_tasks} tasks')
+        elif self.loss_weight == 'GN':  # GN = GradNorm
+            gradnorm_alpha = kwargs.get('gradnorm_alpha', 1.5)
+            self.gradnorm = GradNorm(num_tasks, alpha=gradnorm_alpha)
+            self.gradnorm.to(self.device)
+            self._log(f'Using GradNorm (alpha={gradnorm_alpha}) for {num_tasks} tasks')
+        elif isinstance(self.loss_weight, (list, tuple)):
+            # Manual weights: e.g., [0.3, 0.7] or [1, 2]
+            assert len(self.loss_weight) == num_tasks, \
+                f"Manual weights length ({len(self.loss_weight)}) must equal num_tasks ({num_tasks})"
+            self.manual_weights = torch.tensor(self.loss_weight, dtype=torch.float32, device=self.device)
+            self._log(f'Using manual loss weights: {self.loss_weight}')
+        elif self.loss_weight != 'EQ':
+            self._log(f'Warning: Unknown loss_weight "{self.loss_weight}", using Equal Weighting (EQ)')
+            self.loss_weight = 'EQ'
+        
         if isinstance(task, list):
             assert len(task) == num_tasks, "the number of tasks must equal the length of \"task\""
             self.output_activation = nn.ModuleList([self.get_output_activation(str(t)) for t in task])
@@ -70,7 +155,19 @@ class MultiTaskModel(BaseModel):
             )
 
     def compile(self, optimizer, loss, lr):
-        self.optimizer = get_optimizer(optimizer, self.parameters(), lr)
+        # Collect parameters for optimizer
+        params_list = [{'params': self.parameters()}]
+        
+        # Add AWL/GradNorm parameters with no weight decay
+        if self.awl is not None:
+            params_list.append({'params': self.awl.parameters(), 'weight_decay': 0})
+            self._log('Added Uncertainty Weighting parameters to optimizer (weight_decay=0)')
+        elif self.gradnorm is not None:
+            params_list.append({'params': self.gradnorm.parameters(), 'weight_decay': 0})
+            self._log('Added GradNorm parameters to optimizer (weight_decay=0)')
+        
+        self.optimizer = get_optimizer(optimizer, params_list, lr)
+        
         if isinstance(loss, list):
             self.loss_fn = [get_loss(l) for l in loss]
         else:
@@ -122,7 +219,17 @@ class MultiTaskModel(BaseModel):
                     loss = torch.tensor(0.0, device=self.device, requires_grad=True)
             loss_list.append(loss)
 
-        if self.loss_weight == 'EQ':
+        if self.loss_weight == 'GN':
+            # For GradNorm, return individual losses
+            return loss_list
+        elif self.loss_weight == 'UW':
+            # Use Uncertainty Weighting
+            loss = self.awl(*loss_list)
+        elif self.manual_weights is not None:
+            # Use manual weights
+            weighted_losses = [w * l for w, l in zip(self.manual_weights, loss_list)]
+            loss = torch.sum(torch.stack(weighted_losses))
+        elif self.loss_weight == 'EQ':
             # Default: All losses are weighted equally
             loss = torch.sum(torch.stack(loss_list))
         else:
@@ -130,8 +237,122 @@ class MultiTaskModel(BaseModel):
         return loss
 
     def compute_loss(self, return_dict, y_true):
-        loss = self.add_loss(return_dict, y_true) + self.regularization_loss()
+        loss = self.add_loss(return_dict, y_true)
+        if isinstance(loss, list):
+            # For GradNorm, losses are returned as list
+            loss = torch.sum(torch.stack(loss))
+        loss = loss + self.regularization_loss()
         return loss
+    
+    def train_step(self, batch_data):
+        """Override train_step to support GradNorm."""
+        if self.loss_weight == 'GN' and self.gradnorm is not None:
+            return self._train_step_gradnorm(batch_data)
+        else:
+            # Use default train_step from BaseModel
+            return super().train_step(batch_data)
+    
+    def _train_step_gradnorm(self, batch_data):
+        """Custom training step for GradNorm."""
+        self.optimizer.zero_grad()
+        return_dict = self.forward(batch_data)
+        y_true = self.get_labels(batch_data)
+        
+        # Get individual task losses
+        loss_list = self.add_loss(return_dict, y_true)
+        
+        # Store initial losses in the first iteration
+        if not self.gradnorm.has_initial_losses:
+            with torch.no_grad():
+                self.gradnorm.initial_losses = torch.tensor(
+                    [loss.item() for loss in loss_list], 
+                    device=self.device
+                )
+                self.gradnorm.has_initial_losses = torch.tensor(True)
+        
+        # Get current loss weights
+        loss_weights = self.gradnorm.get_loss_weights()
+        
+        # Weighted sum of losses
+        weighted_loss = sum(w * l for w, l in zip(loss_weights, loss_list))
+        reg_loss = self.regularization_loss()
+        main_loss = weighted_loss
+        total_loss = main_loss + reg_loss
+        
+        # Get the last shared layer for gradient computation
+        # We need to identify a shared representation layer
+        last_shared_layer = self._get_last_shared_layer()
+        
+        if last_shared_layer is not None and self._current_epoch >= 1:
+            # Compute gradients for each task
+            task_gradients = []
+            for i, loss in enumerate(loss_list):
+                # Retain graph for all but the last task
+                retain = (i < len(loss_list) - 1)
+                if last_shared_layer.weight.grad is not None:
+                    last_shared_layer.weight.grad.zero_()
+                
+                loss.backward(retain_graph=True)
+                
+                if last_shared_layer.weight.grad is not None:
+                    task_gradients.append(last_shared_layer.weight.grad.clone())
+                else:
+                    task_gradients.append(torch.zeros_like(last_shared_layer.weight))
+            
+            # Clear gradients before GradNorm update
+            self.optimizer.zero_grad()
+            
+            # Stack gradients: [num_tasks, ...]
+            if len(task_gradients) > 0:
+                # Compute gradient norms for each task
+                grad_norms = torch.stack([
+                    torch.norm(loss_weights[i] * grad, p=2) 
+                    for i, grad in enumerate(task_gradients)
+                ])
+                
+                # Average gradient norm
+                mean_grad_norm = grad_norms.mean()
+                
+                # Compute relative inverse training rates
+                with torch.no_grad():
+                    loss_ratios = torch.tensor([
+                        loss_list[i].item() / (self.gradnorm.initial_losses[i].item() + 1e-8)
+                        for i in range(len(loss_list))
+                    ], device=self.device)
+                    inverse_train_rates = loss_ratios / (loss_ratios.mean() + 1e-8)
+                
+                # GradNorm loss: balance gradient norms
+                target_grad_norms = mean_grad_norm * (inverse_train_rates ** self.gradnorm.alpha)
+                gradnorm_loss = torch.abs(grad_norms - target_grad_norms.detach()).sum()
+                
+                # Backward pass for GradNorm
+                gradnorm_loss.backward()
+        
+        # Final backward pass with updated weights
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        self._sync_gradients()
+        grad_norm = nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
+        self.optimizer.step()
+        
+        return total_loss, main_loss, reg_loss, grad_norm
+    
+    def _get_last_shared_layer(self):
+        """Get the last shared layer for GradNorm gradient computation.
+        Override this method in specific models to identify the shared representation layer.
+        """
+        # Try to find common layer names in multi-task models
+        for name, module in self.named_modules():
+            if any(keyword in name.lower() for keyword in ['shared', 'bottom', 'embedding', 'dnn']):
+                if isinstance(module, nn.Linear) and hasattr(module, 'weight'):
+                    return module
+        
+        # Fallback: return the first Linear layer
+        for module in self.modules():
+            if isinstance(module, nn.Linear) and hasattr(module, 'weight'):
+                return module
+        
+        return None
     
     def evaluate(self, data_generator, metrics=None):
         self.eval()  # set to evaluation mode

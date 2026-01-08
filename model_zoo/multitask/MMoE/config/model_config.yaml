@@ -1,7 +1,7 @@
 ### Base: This base setting will be inherited by all the expid configs.
 Base:
     model_root: './checkpoints/'
-    num_workers: 3
+    num_workers: 0
     verbose: 1
     early_stop_patience: 2
     pickle_feature_encoder: True
@@ -16,7 +16,7 @@ Base:
 ### ModelName_default: This is a config template for hyper-tuning use
 MMoE_default:
     model: MMoE
-    dataset_id: TBD
+    dataset_id: za_mtl_20260107
     loss: ['binary_crossentropy','binary_crossentropy']
     metrics: ['logloss', 'AUC']
     task: ['binary_classification','binary_classification']
@@ -43,7 +43,7 @@ MMoE_default:
 ### ModelName_test: This is a config for test only
 MMoE_test:
     model: MMoE
-    dataset_id: all_seeds_processed
+    dataset_id: za_mtl_20260107
     loss: ['binary_crossentropy','binary_crossentropy']
     metrics: ['logloss', 'AUC']
     task: ['binary_classification','binary_classification']
@@ -62,6 +62,91 @@ MMoE_test:
     batch_size: 128
     embedding_dim: 64
     epochs: 1
+    shuffle: True
+    seed: 2023
+    monitor: 'AUC'
+    monitor_mode: 'max'
+
+### MMoE_with_uncertainty_weighting: Using Uncertainty Weighting for automatic loss balancing
+MMoE_with_UW:
+    model: MMoE
+    dataset_id: za_mtl_20260107
+    loss: ['binary_crossentropy','binary_crossentropy']
+    metrics: ['logloss', 'AUC']
+    task: ['binary_classification','binary_classification']
+    num_tasks: 2
+    loss_weight: 'UW'  # Enable Uncertainty Weighting
+    optimizer: adam
+    learning_rate: 1.e-3
+    num_experts: 8
+    expert_hidden_units: [512,256,128]
+    gate_hidden_units: [128, 64]
+    tower_hidden_units: [128, 64]
+    hidden_activations: relu
+    net_regularizer: 0
+    embedding_regularizer: 1.e-6
+    batch_norm: False
+    net_dropout: 0
+    batch_size: 128
+    embedding_dim: 64
+    epochs: 100
+    shuffle: True
+    seed: 2023
+    monitor: 'AUC'
+    monitor_mode: 'max'
+
+### MMoE_with_gradnorm: Using GradNorm for gradient-based loss balancing
+MMoE_with_GN:
+    model: MMoE
+    dataset_id: za_mtl_20260107
+    loss: ['binary_crossentropy','binary_crossentropy']
+    metrics: ['logloss', 'AUC']
+    task: ['binary_classification','binary_classification']
+    num_tasks: 2
+    loss_weight: 'GN'  # Enable GradNorm
+    gradnorm_alpha: 1.5  # GradNorm hyperparameter (default: 1.5)
+    optimizer: adam
+    learning_rate: 1.e-3
+    num_experts: 8
+    expert_hidden_units: [512,256,128]
+    gate_hidden_units: [128, 64]
+    tower_hidden_units: [128, 64]
+    hidden_activations: relu
+    net_regularizer: 0
+    embedding_regularizer: 1.e-6
+    batch_norm: False
+    net_dropout: 0
+    batch_size: 128
+    embedding_dim: 64
+    epochs: 100
+    shuffle: True
+    seed: 2023
+    monitor: 'AUC'
+    monitor_mode: 'max'
+
+### MMoE_with_manual_weights: Using manual loss weights
+MMoE_with_manual:
+    model: MMoE
+    dataset_id: za_mtl_20260107
+    loss: ['binary_crossentropy','binary_crossentropy']
+    metrics: ['logloss', 'AUC']
+    task: ['binary_classification','binary_classification']
+    num_tasks: 2
+    loss_weight: [0.4, 0.6]  # Manual weights for each task
+    optimizer: adam
+    learning_rate: 1.e-3
+    num_experts: 8
+    expert_hidden_units: [512,256,128]
+    gate_hidden_units: [128, 64]
+    tower_hidden_units: [128, 64]
+    hidden_activations: relu
+    net_regularizer: 0
+    embedding_regularizer: 1.e-6
+    batch_norm: False
+    net_dropout: 0
+    batch_size: 128
+    embedding_dim: 64
+    epochs: 100
     shuffle: True
     seed: 2023
     monitor: 'AUC'
