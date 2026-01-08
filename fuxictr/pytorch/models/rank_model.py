@@ -240,12 +240,15 @@ class BaseModel(nn.Module):
         if self._verbose == 0 or not self._is_master:
             batch_iterator = data_generator
         else:
-            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout)
+            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout, leave=False) # Fix newline issue
         for batch_index, batch_data in enumerate(batch_iterator):
             self._batch_index = batch_index
             self._total_steps += 1
             loss, main_loss, reg_loss, grad_norm = self.train_step(batch_data)
             
+            if (self._verbose > 0 and self._is_master):
+                batch_iterator.set_postfix(loss=loss.item(), main=main_loss.item(), reg=reg_loss.item(), grad=grad_norm.item())
+
             train_loss += loss.item()
             train_main_loss += main_loss.item()
             train_reg_loss += reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss
