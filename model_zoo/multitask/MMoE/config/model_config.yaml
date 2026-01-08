@@ -61,7 +61,7 @@ MMoE_test:
     net_dropout: 0
     batch_size: 128
     embedding_dim: 64
-    epochs: 1
+    epochs: 15
     shuffle: True
     seed: 2023
     monitor: 'AUC'
@@ -72,7 +72,7 @@ MMoE_with_UW:
     model: MMoE
     dataset_id: za_mtl_20260107
     loss: ['binary_crossentropy','binary_crossentropy']
-    metrics: ['logloss', 'AUC']
+    metrics: ['logloss', 'AUC', 'KS', 'recall', 'precision', 'f1']
     task: ['binary_classification','binary_classification']
     num_tasks: 2
     loss_weight: 'UW'  # Enable Uncertainty Weighting
@@ -89,7 +89,7 @@ MMoE_with_UW:
     net_dropout: 0
     batch_size: 128
     embedding_dim: 64
-    epochs: 100
+    epochs: 15
     shuffle: True
     seed: 2023
     monitor: 'AUC'
@@ -100,7 +100,7 @@ MMoE_with_GN:
     model: MMoE
     dataset_id: za_mtl_20260107
     loss: ['binary_crossentropy','binary_crossentropy']
-    metrics: ['logloss', 'AUC']
+    metrics: ['logloss', 'AUC', 'KS', 'recall', 'precision', 'f1']
     task: ['binary_classification','binary_classification']
     num_tasks: 2
     loss_weight: 'GN'  # Enable GradNorm
@@ -118,7 +118,7 @@ MMoE_with_GN:
     net_dropout: 0
     batch_size: 128
     embedding_dim: 64
-    epochs: 100
+    epochs: 15
     shuffle: True
     seed: 2023
     monitor: 'AUC'
@@ -129,7 +129,7 @@ MMoE_with_manual:
     model: MMoE
     dataset_id: za_mtl_20260107
     loss: ['binary_crossentropy','binary_crossentropy']
-    metrics: ['logloss', 'AUC']
+    metrics: ['logloss', 'AUC', 'KS', 'recall', 'precision', 'f1']
     task: ['binary_classification','binary_classification']
     num_tasks: 2
     loss_weight: [0.4, 0.6]  # Manual weights for each task
@@ -146,7 +146,7 @@ MMoE_with_manual:
     net_dropout: 0
     batch_size: 128
     embedding_dim: 64
-    epochs: 100
+    epochs: 15
     shuffle: True
     seed: 2023
     monitor: 'AUC'
