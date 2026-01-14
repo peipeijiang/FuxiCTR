@@ -10,6 +10,7 @@ import yaml
 import shutil
 import json
 import base64
+import copy
 import psutil
 from datetime import datetime
 from code_editor import code_editor
@@ -987,12 +988,82 @@ def render_dataset_config_body(
     current_sel = st.session_state.get(select_key)
     if current_sel and current_sel not in dataset_names:
         del st.session_state[select_key]
-    selected_name = st.selectbox(
-        "选择数据集配置 (dataset_id)",
-        dataset_names,
-        key=select_key,
-        help="选择需要编辑的数据集条目"
-    )
+    copy_mode_key = f"{select_key}_copy_mode"
+    copy_input_key = f"{select_key}_copy_input"
+    copy_clear_key = f"{select_key}_copy_clear"
+    if copy_mode_key not in st.session_state:
+        st.session_state[copy_mode_key] = False
+    if st.session_state.get(copy_clear_key):
+        st.session_state.pop(copy_input_key, None)
+        st.session_state[copy_clear_key] = False
+
+    # Copy Handler Logic (Must run before selectbox is rendered)
+    copy_action_key = f"{select_key}_copy_action"
+    if st.session_state.get(copy_action_key):
+        st.session_state[copy_action_key] = False  # Consume trigger
+        src_id = st.session_state.get(select_key)
+        tgt_id = st.session_state.get(copy_input_key, "").strip()
+
+        if not src_id:
+            st.warning("复制操作已跳过：未选中源配置。")
+        elif not tgt_id:
+            st.warning("复制操作已跳过：新名称不能为空。")
+        elif tgt_id in data:
+            st.warning(f"复制操作已跳过：名称 '{tgt_id}' 已存在。")
+        else:
+            data[tgt_id] = copy.deepcopy(data.get(src_id) or {})
+            dataset_names.append(tgt_id)
+            st.session_state[select_key] = tgt_id
+            if buffer_key:
+                _set_buffered_content(buffer_key, _yaml_dump(data))
+            st.toast(f"已复制为 {tgt_id}（记得保存）", icon="✅")
+            st.session_state[copy_mode_key] = False
+            st.session_state[copy_clear_key] = True
+
+    sel_cols = st.columns([0.94, 0.06], vertical_alignment="bottom")
+    with sel_cols[0]:
+        selected_name = st.selectbox(
+            "选择数据集配置 (dataset_id)",
+            dataset_names,
+            key=select_key,
+            help="选择需要编辑的数据集条目"
+        )
+    with sel_cols[1]:
+        st.markdown("""
+            <style>
+            div[data-testid="stColumn"]:has(div[class="copy_marker"]) button {
+                border: 1px solid transparent !important;
+                background-color: transparent !important;
+                color: #666 !important;
+                padding: 0rem 0.5rem !important;
+            }
+            div[data-testid="stColumn"]:has(div[class="copy_marker"]) button:hover {
+                background-color: #f3f4f6 !important;
+                color: #000 !important;
+                border: 1px solid #e5e7eb !important;
+            }
+            </style>
+            <div class='copy_marker' style='display:none'></div>
+            """, unsafe_allow_html=True)
+        if st.button("✚", key=f"{select_key}_copy_btn", help="克隆当前数据集配置为新名称", type="secondary"):
+            st.session_state[copy_mode_key] = True
+
+    new_ds_name = st.session_state.get(copy_input_key, "")
+    if st.session_state[copy_mode_key]:
+        with st.container(border=True):
+            new_ds_name = st.text_input("新 dataset_id", key=copy_input_key, placeholder="输入新名称")
+            btn_cols = st.columns([1, 1])
+
+            def _on_confirm_copy():
+                st.session_state[copy_action_key] = True
+
+            with btn_cols[0]:
+                st.button("确定复制", key=f"{select_key}_confirm_copy", on_click=_on_confirm_copy)
+            with btn_cols[1]:
+                if st.button("取消", key=f"{select_key}_cancel_copy"):
+                    st.session_state[copy_mode_key] = False
+                    st.session_state[copy_clear_key] = True
+
     if not selected_name:
         return content
 
@@ -1197,6 +1268,7 @@ def render_model_config_body(
     lines,
     is_fullscreen=False,
     selected_model=None,
+    buffer_key=None,
     **_
 ):
     """Render model_config.yaml as structured form with section selector."""
@@ -1229,13 +1301,83 @@ def render_model_config_body(
         if name.lower() != "base":
             default_idx = i
             break
-    selected_name = st.selectbox(
-        "选择模型配置",
-        config_names,
-        index=default_idx if config_names else None,
-        key=select_key,
-        help="选择需要编辑的配置节"
-    )
+    copy_mode_key = f"{select_key}_copy_mode"
+    copy_input_key = f"{select_key}_copy_input"
+    copy_clear_key = f"{select_key}_copy_clear"
+    if copy_mode_key not in st.session_state:
+        st.session_state[copy_mode_key] = False
+    if st.session_state.get(copy_clear_key):
+        st.session_state.pop(copy_input_key, None)
+        st.session_state[copy_clear_key] = False
+
+    # Copy Handler Logic (Must run before selectbox is rendered)
+    copy_action_key = f"{select_key}_copy_action"
+    if st.session_state.get(copy_action_key):
+        st.session_state[copy_action_key] = False  # Consume trigger
+        src_id = st.session_state.get(select_key)
+        tgt_id = st.session_state.get(copy_input_key, "").strip()
+
+        if not src_id:
+            st.warning("复制操作已跳过：未选中源配置。")
+        elif not tgt_id:
+             st.warning("复制操作已跳过：新名称不能为空。")
+        elif tgt_id in data:
+             st.warning(f"复制操作已跳过：名称 '{tgt_id}' 已存在。")
+        else:
+            data[tgt_id] = copy.deepcopy(data.get(src_id) or {})
+            config_names.append(tgt_id)
+            st.session_state[select_key] = tgt_id
+            if buffer_key:
+                _set_buffered_content(buffer_key, _yaml_dump(data))
+            st.toast(f"已复制为 {tgt_id}（记得保存）", icon="✅")
+            st.session_state[copy_mode_key] = False
+            st.session_state[copy_clear_key] = True
+
+    sel_cols = st.columns([0.94, 0.06], vertical_alignment="bottom")
+    with sel_cols[0]:
+        selected_name = st.selectbox(
+            "选择模型配置",
+            config_names,
+            index=default_idx if config_names else None,
+            key=select_key,
+            help="选择需要编辑的配置节"
+        )
+    with sel_cols[1]:
+        st.markdown("""
+            <style>
+            div[data-testid="stColumn"]:has(div[class="copy_marker"]) button {
+                border: 1px solid transparent !important;
+                background-color: transparent !important;
+                color: #666 !important;
+                padding: 0rem 0.5rem !important;
+            }
+            div[data-testid="stColumn"]:has(div[class="copy_marker"]) button:hover {
+                background-color: #f3f4f6 !important;
+                color: #000 !important;
+                border: 1px solid #e5e7eb !important;
+            }
+            </style>
+            <div class='copy_marker' style='display:none'></div>
+            """, unsafe_allow_html=True)
+        if st.button("✚", key=f"{select_key}_copy_btn", help="克隆当前模型配置为新名称", type="secondary"):
+            st.session_state[copy_mode_key] = True
+
+    new_model_name = st.session_state.get(copy_input_key, "")
+    if st.session_state[copy_mode_key]:
+        with st.container(border=True):
+            new_model_name = st.text_input("新配置名", key=copy_input_key, placeholder="输入新名称")
+            btn_cols = st.columns([1, 1])
+            
+            def _on_confirm_copy_model():
+                st.session_state[copy_action_key] = True
+
+            with btn_cols[0]:
+                st.button("确定复制", key=f"{select_key}_confirm_copy", on_click=_on_confirm_copy_model)
+            with btn_cols[1]:
+                if st.button("取消", key=f"{select_key}_cancel_copy"):
+                    st.session_state[copy_mode_key] = False
+                    st.session_state[copy_clear_key] = True
+
     if not selected_name:
         return content
 
@@ -1543,7 +1685,7 @@ if selected_model:
             else:
                 col_ratios = [1, 0.12, 0.12, 0.12]
                 
-            header_cols = st.columns(col_ratios, gap="small")
+            header_cols = st.columns(col_ratios, gap="small", vertical_alignment="bottom")
             
             with header_cols[0]:
                 st.markdown(f"### **{title}**") # Bold title
