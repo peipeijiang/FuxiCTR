@@ -841,6 +841,94 @@ def _render_fallback_editor(content, *, editor_key, lang, lines):
     return content
 
 
+def _render_label_col_section(entry, editor_key, selected_name):
+    """可视化编辑 label_col，支持单目标(dict)和多目标(list)及新增"""
+    label_col = entry.get("label_col")
+    
+    # 策略：如果是 dict，视为 items=[dict]；如果是 list，视为 items=list
+    # 保存时：如果原先是 dict 且 count=1，存回 dict；否则存 list
+    is_single_structure = isinstance(label_col, dict)
+    items = []
+    if is_single_structure:
+        items = [label_col]
+    elif isinstance(label_col, list):
+        items = list(label_col)
+    
+    # 扫描所有 keys
+    all_keys = ["name", "dtype"]
+    for item in items:
+        if isinstance(item, dict):
+            for k in item.keys():
+                if k not in all_keys:
+                    all_keys.append(k)
+    
+    st.markdown("##### label_col")
+
+    new_items = []
+    deleted_indices = []
+    
+    # 渲染列表
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            new_items.append(item)
+            continue
+            
+        cols = st.columns(len(all_keys) + 1, vertical_alignment="bottom")
+        updated_item = OrderedDict(item)
+        
+        for i, k in enumerate(all_keys):
+            with cols[i]:
+                val = item.get(k)
+                val_text = "" if val is None else str(val)
+                new_val = st.text_input(
+                    k, 
+                    val_text, 
+                    key=f"{editor_key}_{selected_name}_label_{idx}_{k}",
+                    label_visibility="visible" if idx == 0 else "collapsed",
+                    placeholder=k
+                )
+                updated_item[k] = _convert_text_to_value(new_val, val, f"label_col.{k}")
+        
+        with cols[-1]:
+            # Delete button with flat modern style
+            st.markdown("""
+                <style>
+                div[data-testid="stColumn"]:has(div[class="del_marker"]) button {
+                    border: none !important;
+                    background: transparent !important;
+                    color: #9ca3af !important;
+                    font-weight: bold !important;
+                }
+                div[data-testid="stColumn"]:has(div[class="del_marker"]) button:hover {
+                    background: #fee2e2 !important;
+                    color: #ef4444 !important;
+                    border: none !important;
+                }
+                </style>
+                <div class='del_marker' style='display:none'></div>
+                """, unsafe_allow_html=True)
+            if st.button("✕", key=f"{editor_key}_{selected_name}_label_del_{idx}", help="删除此任务"):
+                deleted_indices.append(idx)
+        
+        new_items.append(updated_item)
+    
+    # 过滤被删除项
+    final_items = [item for i, item in enumerate(new_items) if i not in deleted_indices]
+
+    # 添加按钮
+    if st.button("➕ 添加任务 (Add Label)", key=f"{editor_key}_{selected_name}_label_add"):
+        final_items.append(OrderedDict({"name": "new_label", "dtype": "float"}))
+    
+    # 更新 entry
+    if not final_items:
+         # 如果清空了，是否移除 key?
+         entry["label_col"] = []
+    elif is_single_structure and len(final_items) == 1:
+         entry["label_col"] = final_items[0]
+    else:
+         entry["label_col"] = final_items
+
+
 def render_dataset_config_body(
     content,
     *,
@@ -1079,7 +1167,7 @@ def render_dataset_config_body(
 
     entry = OrderedDict(entry_raw)
 
-    visible_fields = [k for k in entry.keys() if k != "feature_cols"]
+    visible_fields = [k for k in entry.keys() if k not in ["feature_cols", "label_col"]]
     simple_fields = [f for f in visible_fields if _is_simple_yaml_value(entry.get(f))]
     complex_fields = [f for f in visible_fields if f not in simple_fields]
 
@@ -1132,6 +1220,10 @@ def render_dataset_config_body(
                             st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
                 else:
                     entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
+
+    # Label Col Editor
+    if "label_col" in entry:
+        _render_label_col_section(entry, editor_key, selected_name)
 
     feature_cols = entry.get("feature_cols")
     if feature_cols is not None:
@@ -2017,17 +2109,33 @@ if selected_model:
             })
             
         # ==================== 进程管理辅助函数 ====================
+        def _get_os_user():
+            try:
+                return psutil.Process().username()
+            except:
+                import getpass
+                return getpass.getuser()
+
         def _verify_process_ownership(pid, username):
-            """验证进程是否属于指定用户"""
+            """验证进程是否属于当前系统用户"""
             try:
                 proc = psutil.Process(pid)
-                return proc.username() == username
+                # 使用 UID 验证更可靠
+                if proc.uids().real == os.getuid():
+                    return True
+                return proc.username() == _get_os_user()
+            except psutil.NoSuchProcess:
+                # 进程不存在，视为归属验证通过（以便后续清理状态）
+                return True
             except Exception as e:
                 logging.warning(f"无法验证进程 {pid} 的用户归属: {e}")
+                # 如果无法验证（如权限拒绝），但我们正在尝试停止它
+                # 最好返回 False 防止误杀，但应提示用户
                 return False
 
         def _is_process_group_safe(pgid, username):
-            """检查进程组是否只包含指定用户的进程"""
+            """检查进程组是否只包含当前系统用户的进程"""
+            system_user = _get_os_user()
             try:
                 result = subprocess.run(
                     ["pgrep", "-g", str(pgid)],
@@ -2040,7 +2148,7 @@ if selected_model:
                     for proc_pid in pids_in_pg:
                         try:
                             proc = psutil.Process(int(proc_pid))
-                            if proc.username() != username:
+                            if proc.username() != system_user:
                                 logging.warning(f"进程组 {pgid} 中包含其他用户的进程 {proc_pid}")
                                 return False
                         except Exception:
@@ -2051,6 +2159,7 @@ if selected_model:
 
         def _kill_process_tree(pid, username):
             """终止进程树（主进程及所有子进程）"""
+            system_user = _get_os_user()
             try:
                 parent = psutil.Process(pid)
                 all_processes = [parent]
@@ -2059,17 +2168,15 @@ if selected_model:
                 try:
                     children = parent.children(recursive=True)
                     for child in children:
-                        if child.username() == username:
+                        if child.username() == system_user:
                             all_processes.append(child)
-                        else:
-                            logging.warning(f"跳过其他用户的子进程: {child.pid}")
                 except Exception:
                     pass
 
                 # 先尝试正常终止
                 for proc in all_processes:
                     try:
-                        if proc.username() == username:
+                        if proc.username() == system_user:
                             proc.terminate()
                     except Exception:
                         pass
@@ -2080,7 +2187,7 @@ if selected_model:
                 # 强制杀死仍在运行的进程
                 for proc in alive:
                     try:
-                        if proc.username() == username:
+                        if proc.username() == system_user:
                             proc.kill()
                     except Exception:
                         pass
@@ -2089,11 +2196,17 @@ if selected_model:
                 logging.warning(f"清理进程树时出错: {e}")
 
         def _kill_torchrun_processes(username):
-            """清理 torchrun 分布式训练进程"""
+            """
+            清理 torchrun 分布式训练进程
+            注意：在单用户系统模拟多用户场景下，username (逻辑用户) 可能与 OS 用户不一致。
+            为了能停止进程，我们这里使用当前 OS 用户进行清理，但会尽量只清理相关的 python/torchrun 进程。
+            """
+            system_user = _get_os_user()
+            
             # 1. 清理 torchrun 主进程及进程组
             try:
                 result = subprocess.run(
-                    ["pgrep", "-u", username, "-f", "torchrun"],
+                    ["pgrep", "-u", system_user, "-f", "torchrun"],
                     capture_output=True,
                     text=True,
                     stderr=subprocess.DEVNULL
@@ -2103,39 +2216,13 @@ if selected_model:
                     for torchrun_pid in torchrun_pids:
                         try:
                             torchrun_proc = psutil.Process(int(torchrun_pid))
-                            if torchrun_proc.username() == username:
-                                # 杀死 torchrun 主进程
+                            if torchrun_proc.username() == system_user:
                                 subprocess.run(
                                     ["kill", "-9", torchrun_pid],
                                     stderr=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL
                                 )
                                 logging.info(f"已终止 torchrun 主进程: {torchrun_pid}")
-
-                                # 杀死进程组中的所有子进程
-                                try:
-                                    pgid = os.getpgid(int(torchrun_pid))
-                                    result = subprocess.run(
-                                        ["pgrep", "-g", str(pgid)],
-                                        capture_output=True,
-                                        text=True,
-                                        stderr=subprocess.DEVNULL
-                                    )
-                                    if result.stdout:
-                                        for proc_pid in result.stdout.strip().split():
-                                            try:
-                                                proc = psutil.Process(int(proc_pid))
-                                                if proc.username() == username and int(proc_pid) != int(torchrun_pid):
-                                                    subprocess.run(
-                                                        ["kill", "-9", proc_pid],
-                                                        stderr=subprocess.DEVNULL,
-                                                        stdout=subprocess.DEVNULL
-                                                    )
-                                                    logging.info(f"已终止 torchrun 子进程: {proc_pid}")
-                                            except Exception:
-                                                pass
-                                except Exception:
-                                    pass
                         except Exception:
                             pass
             except Exception:
@@ -2144,7 +2231,7 @@ if selected_model:
             # 2. 清理残留的 python run_expid 进程
             try:
                 result = subprocess.run(
-                    ["pgrep", "-u", username, "-f", "python.*run_expid"],
+                    ["pgrep", "-u", system_user, "-f", "python.*run_expid"],
                     capture_output=True,
                     text=True,
                     stderr=subprocess.DEVNULL
@@ -2153,7 +2240,12 @@ if selected_model:
                     for proc_pid in result.stdout.strip().split():
                         try:
                             proc = psutil.Process(int(proc_pid))
-                            if proc.username() == username:
+                            if proc.username() == system_user:
+                                # 再次检查 cmdline 避免误杀
+                                cmdline = " ".join(proc.cmdline())
+                                if "dashboard/app.py" in cmdline or "streamlit" in cmdline:
+                                    continue
+                                    
                                 subprocess.run(
                                     ["kill", "-9", proc_pid],
                                     stderr=subprocess.DEVNULL,
@@ -2165,11 +2257,11 @@ if selected_model:
             except Exception:
                 pass
 
-            # 3. 清理分布式训练端口进程
+            # 3. 清理分布式训练端口进程 (端口占用清理)
             try:
                 import re
                 result = subprocess.run(
-                    ["pgrep", "-u", username],
+                    ["pgrep", "-u", system_user],
                     capture_output=True,
                     text=True,
                     stderr=subprocess.DEVNULL
@@ -2192,13 +2284,16 @@ if selected_model:
                                     if port_pid in user_pids:
                                         try:
                                             port_proc = psutil.Process(int(port_pid))
-                                            if port_proc.username() == username and int(port) > 10000:
-                                                subprocess.run(
-                                                    ["kill", "-9", port_pid],
-                                                    stderr=subprocess.DEVNULL,
-                                                    stdout=subprocess.DEVNULL
-                                                )
-                                                logging.info(f"已终止分布式端口 {port} 的进程: {port_pid}")
+                                            # 只清理高位端口 (DDP通常使用 random free port, 但 torchrun 也会用 start_method='spawn')
+                                            # 这里保守一点，只清理明确属于当前用户的 python 进程
+                                            if port_proc.username() == system_user and int(port) > 10000:
+                                                 if "python" in port_proc.name().lower():
+                                                    subprocess.run(
+                                                        ["kill", "-9", port_pid],
+                                                        stderr=subprocess.DEVNULL,
+                                                        stdout=subprocess.DEVNULL
+                                                    )
+                                                    logging.info(f"已终止分布式端口 {port} 的进程: {port_pid}")
                                         except Exception:
                                             pass
             except Exception:
@@ -2284,6 +2379,7 @@ if selected_model:
 
                     # 1. 验证进程归属
                     if not _verify_process_ownership(pid, username):
+                        st.error(f"无法停止进程 {pid}: 进程不属于当前系统用户，或权限不足。")
                         logging.warning(f"安全警告：进程 {pid} 不属于用户 {username}")
                         return
 
