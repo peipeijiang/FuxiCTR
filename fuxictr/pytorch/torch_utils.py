@@ -25,6 +25,7 @@ import torch.distributed as dist
 import random
 from functools import partial
 import re
+from datetime import timedelta
 
 from fuxictr.pytorch import losses
 
@@ -157,7 +158,7 @@ def init_distributed_env(cli_args):
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
-        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+        dist.init_process_group(backend=backend, rank=rank, world_size=world_size, timeout=timedelta(minutes=60))
     return True, rank, world_size, local_rank
 
 
