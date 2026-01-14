@@ -13,6 +13,7 @@ import base64
 import psutil
 from datetime import datetime
 from code_editor import code_editor
+from collections import OrderedDict
 
 def get_gpu_options():
     options = [-1]
@@ -617,6 +618,663 @@ def save_file_content(file_path, content):
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
 
+
+def _get_buffered_content(buffer_key, file_path):
+    """Prefer in-memory buffer over disk to survive reruns (e.g., Cmd/Ctrl+Enter)."""
+    if buffer_key and buffer_key in st.session_state:
+        return st.session_state[buffer_key]
+    return load_file_content(file_path)
+
+
+def _set_buffered_content(buffer_key, content):
+    if buffer_key:
+        st.session_state[buffer_key] = content
+
+
+def _clear_buffer(buffer_key):
+    if buffer_key and buffer_key in st.session_state:
+        del st.session_state[buffer_key]
+
+
+def _normalize_for_yaml(value):
+    """Convert OrderedDict and other containers to YAML-friendly structures."""
+    if isinstance(value, OrderedDict):
+        return {k: _normalize_for_yaml(v) for k, v in value.items()}
+    if isinstance(value, dict):
+        return {k: _normalize_for_yaml(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_for_yaml(v) for v in value]
+    return value
+
+
+def _yaml_dump(data):
+    """Dump YAML with consistent formatting."""
+    normalized = _normalize_for_yaml(data)
+    return yaml.safe_dump(normalized, sort_keys=False, allow_unicode=True)
+
+
+def _is_simple_yaml_value(value):
+    """Decide whether a value fits compact single-line widgets."""
+    if value is None:
+        return True
+    if isinstance(value, (bool, int, float)):
+        return True
+    if isinstance(value, str):
+        return "\n" not in value and len(value) <= 120
+    return False
+
+
+def _convert_text_to_value(text, fallback, label):
+    """Parse YAML scalar/structure from text; preserve fallback on error."""
+    if text is None:
+        return fallback
+    stripped = text.strip()
+    if stripped == "":
+        if isinstance(fallback, str):
+            return ""
+        return fallback
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        st.warning(f"{label} 解析失败，已保留原值。错误信息: {exc}")
+        return fallback
+
+
+def _parse_name_list(text, fallback):
+    """Parse feature name list from text area; accept YAML list or comma/newline separated."""
+    if text is None:
+        return fallback
+    stripped = text.strip()
+    if stripped == "":
+        return []
+    try:
+        loaded = yaml.safe_load(text)
+        if isinstance(loaded, list):
+            return loaded
+    except Exception:
+        pass
+    parts = []
+    for line in stripped.splitlines():
+        for chunk in line.split(','):
+            val = chunk.strip()
+            if val:
+                parts.append(val)
+    return parts if parts else fallback
+
+
+def _parse_scalar_list(text, fallback):
+    """Parse scalar list from a compact input."""
+    if text is None:
+        return fallback
+    stripped = text.strip()
+    if stripped == "":
+        return [] if isinstance(fallback, list) else fallback
+    try:
+        loaded = yaml.safe_load(text)
+        if isinstance(loaded, list):
+            return loaded
+    except Exception:
+        pass
+    items = []
+    for line in stripped.splitlines():
+        for part in line.split(','):
+            val = part.strip()
+            if val:
+                items.append(_convert_text_to_value(val, val, "list_item"))
+    return items if items else fallback
+
+
+def _detect_simple_dict_list(value):
+    """Return ordered keys when value is a list of flat dicts, else None."""
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    keys = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        for k, v in item.items():
+            if not _is_simple_yaml_value(v):
+                return None
+            if k not in keys:
+                keys.append(k)
+    if len(keys) > 6:
+        return None
+    return keys
+
+
+def _unique_keep_order(seq):
+    seen = set()
+    out = []
+    for item in seq:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _render_simple_dict_list(label, items, widget_key, keys):
+    """Compact grid editor for list-of-dicts with simple scalar fields."""
+    st.markdown(f"**{label}**")
+    updated = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            updated.append(item)
+            continue
+        st.caption(f"#{idx + 1}")
+        cols = st.columns(len(keys))
+        new_item = OrderedDict()
+        for col_idx, k in enumerate(keys):
+            with cols[col_idx]:
+                base = item.get(k)
+                val_text = "" if base is None else str(base)
+                input_val = st.text_input(
+                    k,
+                    val_text,
+                    key=f"{widget_key}_{idx}_{k}",
+                    label_visibility="visible" if len(keys) <= 3 else "collapsed",
+                    placeholder=k
+                )
+                new_item[k] = _convert_text_to_value(input_val, base, f"{label}.{k}")
+        updated.append(new_item)
+    return updated
+
+
+def _render_yaml_field(label, value, widget_key, *, is_fullscreen=False):
+    """Render a Streamlit widget for common YAML value types."""
+    if isinstance(value, bool):
+        return st.checkbox(label, value=value, key=widget_key)
+
+    if isinstance(value, (list, tuple, dict, OrderedDict)):
+        dict_list_keys = _detect_simple_dict_list(value)
+        if dict_list_keys:
+            return _render_simple_dict_list(label, value, widget_key, dict_list_keys)
+
+        # Compact edit for simple scalar lists
+        if isinstance(value, (list, tuple)) and all(not isinstance(v, (list, dict, tuple, set)) for v in value):
+            compact = ", ".join(map(str, value))
+            text = st.text_input(label, compact, key=widget_key, placeholder="逗号或换行分隔")
+            return _parse_scalar_list(text, list(value))
+
+        serialized = _yaml_dump(value).strip()
+        line_count = max(3, len(serialized.splitlines())) if serialized else 3
+        base_height = 32 * min(10, line_count)
+        height = 380 if is_fullscreen else max(120, min(260, base_height))
+        text = st.text_area(label, serialized, key=widget_key, height=height)
+        return _convert_text_to_value(text, value, label)
+
+    display_text = "" if value is None else str(value)
+    text = st.text_input(label, display_text, key=widget_key)
+    return _convert_text_to_value(text, value, label)
+
+
+def _render_fallback_editor(content, *, editor_key, lang, lines):
+    """Use code_editor as fallback when structured rendering fails."""
+    editor_options = {
+        "wrap": False,
+        "showGutter": True,
+        "autoScrollEditorIntoView": True,
+        "minLines": lines,
+        "maxLines": lines,
+        "scrollBeyondLastLine": False
+    }
+    res = code_editor(
+        content,
+        lang=lang,
+        key=editor_key,
+        response_mode="debounce",
+        options=editor_options,
+        buttons=[{
+            "name": "Copy",
+            "feather": "Copy",
+            "hasText": True,
+            "alwaysOn": True,
+            "commands": ["copyAll"],
+            "style": {"top": "0.46rem", "right": "0.4rem"}
+        }]
+    )
+    if isinstance(res, dict):
+        if res.get("text") == "" and res.get("type", "") == "":
+            return content
+        return res.get("text", content)
+    return content
+
+
+def render_dataset_config_body(
+    content,
+    *,
+    editor_key,
+    lang,
+    lines,
+    is_fullscreen=False,
+    selected_model=None,
+    buffer_key=None
+):
+    """Render dataset_config.yaml as structured form while hiding feature_cols."""
+
+    def _list_data_files(data_root_val):
+        if not data_root_val:
+            return []
+        candidates = [data_root_val]
+        if selected_model:
+            candidates.append(os.path.join(MODEL_ZOO_DIR, selected_model, data_root_val))
+        candidates.append(os.path.join(ROOT_DIR, data_root_val))
+
+        base_dir = None
+        for cand in candidates:
+            abs_cand = os.path.abspath(cand)
+            if os.path.isdir(abs_cand):
+                base_dir = abs_cand
+                break
+        if not base_dir:
+            return []
+        files = []
+        try:
+            for f in os.listdir(base_dir):
+                if f.startswith('.'):
+                    continue
+                full = os.path.join(base_dir, f)
+                rel_path = os.path.normpath(os.path.join(data_root_val, f))
+                # 支持目录（常见是 parquet 目录）与文件（常见是 .json 配置）
+                if os.path.isdir(full) or os.path.isfile(full):
+                    files.append(rel_path)
+        except Exception:
+            return []
+        # keep order, unique
+        seen = set()
+        out = []
+        for f in files:
+            if f not in seen:
+                seen.add(f)
+                out.append(f)
+        return sorted(out)
+
+    def _auto_update_feature_cols_from_parquet(train_path, data_root=None):
+        if not train_path:
+            st.warning("请先填写 train_data 路径后再更新特征。")
+            return None
+
+        candidates = []
+        # Raw path
+        candidates.append(train_path)
+        # data_root relative
+        if data_root:
+            candidates.append(os.path.join(data_root, train_path))
+        # model directory relative
+        if selected_model:
+            model_dir = os.path.join(MODEL_ZOO_DIR, selected_model)
+            candidates.append(os.path.join(model_dir, train_path))
+        # project root
+        candidates.append(os.path.join(ROOT_DIR, train_path))
+
+        target = None
+        chosen_dir = None
+        for cand in candidates:
+            if not cand:
+                continue
+            abs_cand = os.path.abspath(cand)
+            if os.path.isfile(abs_cand) and abs_cand.endswith('.parquet'):
+                target = abs_cand
+                break
+            if os.path.isdir(abs_cand):
+                chosen_dir = abs_cand
+                parquet_files = sorted([f for f in os.listdir(abs_cand) if f.endswith('.parquet')])
+                if parquet_files:
+                    target = os.path.join(abs_cand, parquet_files[0])
+                    break
+
+        if target is None:
+            if chosen_dir:
+                st.error(f"在目录 {chosen_dir} 下未找到 parquet 文件。")
+            else:
+                st.error("train_data 路径无效，未找到 parquet 文件（支持目录或 .parquet 文件，相对路径自动尝试 data_root/模型目录/项目根）。")
+            return None
+
+        try:
+            df = pd.read_parquet(target)
+        except Exception as exc:
+            st.error(f"读取 parquet 失败：{exc}")
+            return None
+
+        cols = list(df.columns)
+        cat = [c for c in cols if c.endswith("_tag")]
+        num = [c for c in cols if c.endswith("_cnt")]
+        seq = [c for c in cols if c.endswith("_textlist")]
+
+        specials = ["appInstalls", "outerBizSorted", "outerModelCleanSorted"]
+        for s in specials:
+            if s in cols:
+                seq.append(s)
+
+        cat = _unique_keep_order(cat)
+        num = _unique_keep_order(num)
+        seq = _unique_keep_order(seq)
+
+        new_feature_cols = []
+        if cat:
+            new_feature_cols.append(OrderedDict({"name": cat, "type": "categorical", "dtype": "int", "active": True}))
+        if num:
+            new_feature_cols.append(OrderedDict({"name": num, "type": "numeric", "dtype": "float", "active": True}))
+        if seq:
+            new_feature_cols.append(OrderedDict({"name": seq, "type": "sequence", "dtype": "int", "active": True}))
+
+        if not new_feature_cols:
+            st.warning("未识别到符合命名规则的特征列，未更新 feature_cols。")
+            return None
+        return new_feature_cols
+
+    try:
+        raw_data = yaml.safe_load(content) or {}
+        if not isinstance(raw_data, dict):
+            raise ValueError("dataset_config.yaml 顶层需为映射")
+    except Exception as exc:
+        st.error(f"无法解析 dataset_config.yaml：{exc}")
+        st.info("已回退到原始编辑器，请修复后再试。")
+        return _render_fallback_editor(
+            content,
+            editor_key=f"{editor_key}_raw",
+            lang=lang,
+            lines=lines
+        )
+
+    data = OrderedDict(raw_data)
+    dataset_names = list(data.keys())
+    if not dataset_names:
+        st.info("当前没有可编辑的数据集配置，将保留原内容。")
+        return content
+
+    select_key = f"{editor_key}_select"
+    current_sel = st.session_state.get(select_key)
+    if current_sel and current_sel not in dataset_names:
+        del st.session_state[select_key]
+    selected_name = st.selectbox(
+        "选择数据集配置 (dataset_id)",
+        dataset_names,
+        key=select_key,
+        help="选择需要编辑的数据集条目"
+    )
+    if not selected_name:
+        return content
+
+    entry_raw = data.get(selected_name) or {}
+    if not isinstance(entry_raw, dict):
+        st.warning("选中的数据集配置格式异常，已回退到原始编辑器。")
+        return _render_fallback_editor(
+            content,
+            editor_key=f"{editor_key}_raw",
+            lang=lang,
+            lines=lines
+        )
+
+    entry = OrderedDict(entry_raw)
+
+    visible_fields = [k for k in entry.keys() if k != "feature_cols"]
+    simple_fields = [f for f in visible_fields if _is_simple_yaml_value(entry.get(f))]
+    complex_fields = [f for f in visible_fields if f not in simple_fields]
+
+    for idx in range(0, len(simple_fields), 2):
+        cols = st.columns(2)
+        for offset in range(2):
+            if idx + offset >= len(simple_fields):
+                break
+            field = simple_fields[idx + offset]
+            widget_key = f"{editor_key}_{selected_name}_{field}"
+            with cols[offset]:
+                data_root_val = entry.get("data_root")
+                file_options = _list_data_files(data_root_val)
+
+                if field in ["train_data", "valid_data", "test_data", "infer_data"] and data_root_val:
+                    current_val = entry.get(field) or ""
+                    options = list(file_options)
+                    if current_val and current_val not in options:
+                        options.insert(0, current_val)
+                    display_label = field
+                    entry[field] = st.selectbox(
+                        display_label,
+                        options,
+                        key=widget_key,
+                        index=options.index(current_val) if current_val in options else 0 if options else None,
+                        placeholder="选择文件"
+                    ) if options else st.text_input(display_label, current_val, key=widget_key)
+                    if field == "train_data":
+                        if st.button("⚡ 更新特征", key=f"{widget_key}_update_feature_cols", help="读取 train_data 下首个 parquet 列并覆盖 feature_cols"):
+                            generated = _auto_update_feature_cols_from_parquet(entry[field], data_root_val)
+                            if generated is not None:
+                                entry["feature_cols"] = generated
+                                # 立即写入 buffer，切换模型返回时仍能看到更新
+                                if buffer_key:
+                                    updated_data = OrderedDict(data)
+                                    updated_data[selected_name] = entry
+                                    _set_buffered_content(buffer_key, _yaml_dump(updated_data))
+                                st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
+                elif field == "train_data":
+                    td_val = "" if entry.get(field) is None else str(entry.get(field))
+                    entry[field] = st.text_input(field, td_val, key=widget_key, placeholder="train_data parquet 路径")
+                    if st.button("⚡ 更新特征", key=f"{widget_key}_update_feature_cols", help="读取 train_data 下首个 parquet 列并覆盖 feature_cols"):
+                        generated = _auto_update_feature_cols_from_parquet(entry[field], entry.get("data_root"))
+                        if generated is not None:
+                            entry["feature_cols"] = generated
+                            if buffer_key:
+                                updated_data = OrderedDict(data)
+                                updated_data[selected_name] = entry
+                                _set_buffered_content(buffer_key, _yaml_dump(updated_data))
+                            st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
+                else:
+                    entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
+
+    feature_cols = entry.get("feature_cols")
+    if feature_cols is not None:
+        group_count = len(feature_cols) if isinstance(feature_cols, (list, tuple)) else 1
+        feature_count = 0
+        if isinstance(feature_cols, (list, tuple)):
+            for group in feature_cols:
+                if not isinstance(group, dict):
+                    continue
+                names = group.get("name")
+                cnt = len(names) if isinstance(names, list) else (1 if names is not None else 0)
+                feature_count += cnt
+        st.caption(f"feature_cols 已隐藏，将在保存时保留原始 {group_count} 组，共约 {feature_count} 项。")
+
+        new_feature_cols = []
+        with st.expander("🎛️ feature_cols 可视化编辑", expanded=False):
+            type_label = {
+                "categorical": "类别型",
+                "numeric": "数值型",
+                "sequence": "序列型"
+            }
+
+            if isinstance(feature_cols, (list, tuple)):
+                last_type = None
+                for idx_fc, group in enumerate(feature_cols):
+                    if not isinstance(group, dict):
+                        new_feature_cols.append(group)
+                        continue
+
+                    g_type_val = str(group.get("type", "")).lower()
+                    if last_type is not None and g_type_val != last_type:
+                        st.markdown('<hr style="border: 1px solid #e5e7eb;" />', unsafe_allow_html=True)
+                    last_type = g_type_val
+
+                    header = type_label.get(g_type_val, g_type_val or "特征组")
+                    names_val = group.get("name")
+                    options = names_val if isinstance(names_val, list) else ([] if names_val is None else [str(names_val)])
+                    name_count = len(options)
+                    active_badge = "#16a34a" if bool(group.get("active", True)) else "#9ca3af"
+                    st.markdown(
+                        """
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px 0;">
+                            <div style="padding:4px 8px;border-radius:999px;background:#eef2ff;color:#4338ca;font-weight:700;font-size:12px;">{header}</div>
+                            <div style="padding:4px 8px;border-radius:999px;background:#f1f5f9;color:#475569;font-weight:600;font-size:12px;">dtype: {dtype}</div>
+                            <div style="padding:4px 8px;border-radius:999px;background:#ecfeff;color:#0f766e;font-weight:600;font-size:12px;">name: {count}</div>
+                            <div style="padding:4px 8px;border-radius:999px;background:{active_bg};color:white;font-weight:700;font-size:12px;">active</div>
+                        </div>
+                        """.format(
+                            header=header or "特征组",
+                            dtype=str(group.get("dtype", "")) or "—",
+                            count=name_count,
+                            active_bg=active_badge
+                        ),
+                        unsafe_allow_html=True
+                    )
+
+                    col_a, col_b, col_c = st.columns([1, 1, 1])
+                    with col_a:
+                        g_type = st.text_input(
+                            "type",
+                            value=str(group.get("type", "")),
+                            key=f"{editor_key}_{selected_name}_type_{idx_fc}"
+                        )
+                    with col_b:
+                        g_dtype = st.text_input(
+                            "dtype",
+                            value=str(group.get("dtype", "")),
+                            key=f"{editor_key}_{selected_name}_dtype_{idx_fc}"
+                        )
+                    with col_c:
+                        g_active = st.checkbox(
+                            "active",
+                            value=bool(group.get("active", True)),
+                            key=f"{editor_key}_{selected_name}_active_{idx_fc}"
+                        )
+
+                    names_val = group.get("name")
+                    options = names_val if isinstance(names_val, list) else ([] if names_val is None else [str(names_val)])
+                    show_names = st.checkbox(
+                        f"name 列表（{name_count} 项）",
+                        value=False,
+                        key=f"{editor_key}_{selected_name}_names_toggle_{idx_fc}"
+                    )
+                    if show_names:
+                        parsed_names = st.multiselect(
+                            "name 列表",
+                            options,
+                            default=options,
+                            key=f"{editor_key}_{selected_name}_names_{idx_fc}",
+                            placeholder="点击展开选择/删减"
+                        )
+                    else:
+                        parsed_names = options
+
+                    other_keys = [k for k in group.keys() if k not in ["name", "type", "dtype", "active"]]
+                    extra_updates = {}
+                    if other_keys:
+                        for ok in other_keys:
+                            val = group.get(ok)
+                            val_text = "" if val is None else str(val)
+                            val_text = st.text_input(
+                                ok,
+                                value=val_text,
+                                key=f"{editor_key}_{selected_name}_extra_{ok}_{idx_fc}"
+                            )
+                            extra_updates[ok] = _convert_text_to_value(val_text, val, ok)
+
+                    new_group = OrderedDict(group)
+                    new_group["type"] = g_type
+                    new_group["dtype"] = g_dtype
+                    new_group["active"] = g_active
+                    new_group["name"] = parsed_names
+                    for ok, ov in extra_updates.items():
+                        new_group[ok] = ov
+
+                    new_feature_cols.append(new_group)
+
+            entry["feature_cols"] = new_feature_cols if new_feature_cols else feature_cols
+
+    for field in complex_fields:
+        widget_key = f"{editor_key}_{selected_name}_{field}"
+        entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
+
+    data[selected_name] = entry
+
+    return _yaml_dump(data)
+
+
+def render_model_config_body(
+    content,
+    *,
+    editor_key,
+    lang,
+    lines,
+    is_fullscreen=False,
+    selected_model=None,
+    **_
+):
+    """Render model_config.yaml as structured form with section selector."""
+    try:
+        raw_data = yaml.safe_load(content) or {}
+        if not isinstance(raw_data, dict):
+            raise ValueError("model_config.yaml 顶层需为映射")
+    except Exception as exc:
+        st.error(f"无法解析 model_config.yaml：{exc}")
+        st.info("已回退到原始编辑器，请修复后再试。")
+        return _render_fallback_editor(
+            content,
+            editor_key=f"{editor_key}_raw",
+            lang=lang,
+            lines=lines
+        )
+
+    data = OrderedDict(raw_data)
+    config_names = list(data.keys())
+    if not config_names:
+        st.info("当前没有可编辑的模型配置，将保留原内容。")
+        return content
+
+    select_key = f"{editor_key}_select"
+    current_sel = st.session_state.get(select_key)
+    if current_sel and current_sel not in config_names:
+        del st.session_state[select_key]
+    default_idx = 0
+    for i, name in enumerate(config_names):
+        if name.lower() != "base":
+            default_idx = i
+            break
+    selected_name = st.selectbox(
+        "选择模型配置",
+        config_names,
+        index=default_idx if config_names else None,
+        key=select_key,
+        help="选择需要编辑的配置节"
+    )
+    if not selected_name:
+        return content
+
+    entry_raw = data.get(selected_name) or {}
+    if not isinstance(entry_raw, dict):
+        st.warning("选中的模型配置非映射结构，已回退到原始编辑器。")
+        return _render_fallback_editor(
+            content,
+            editor_key=f"{editor_key}_raw",
+            lang=lang,
+            lines=lines
+        )
+
+    entry = OrderedDict(entry_raw)
+
+    st.caption("支持直接修改各字段，复杂结构以 YAML 文本形式编辑。")
+
+    fields = list(entry.keys())
+    simple_fields = [f for f in fields if _is_simple_yaml_value(entry.get(f))]
+    complex_fields = [f for f in fields if f not in simple_fields]
+
+    for idx in range(0, len(simple_fields), 2):
+        cols = st.columns(2)
+        for offset in range(2):
+            if idx + offset >= len(simple_fields):
+                break
+            field = simple_fields[idx + offset]
+            widget_key = f"{editor_key}_{selected_name}_{field}"
+            with cols[offset]:
+                entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
+
+    for field in complex_fields:
+        widget_key = f"{editor_key}_{selected_name}_{field}"
+        entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
+
+    data[selected_name] = entry
+
+    return _yaml_dump(data)
+
 def get_config_paths(model_name, username):
     """
     Return the effective paths for config files and scripts.
@@ -843,12 +1501,16 @@ if selected_model:
             st.session_state.fullscreen_section = None
 
         # Helper to render editor
-        def render_editor_section(title, file_key, content, lang, lines, key_suffix, download_mime, is_custom, reset_func):
+        def render_editor_section(title, file_key, content, lang, lines, key_suffix, download_mime, is_custom, reset_func, body_renderer=None, body_kwargs=None, buffer_key=None):
             # Header with integrated buttons
             is_fullscreen = st.session_state.fullscreen_section == key_suffix
-            # Using 🗗 (Window Restore) for exit, and ⛶ (Square Four Corners) for enter
-            fs_icon = "🗗" if is_fullscreen else "⛶"
-            fs_help = "退出全屏" if is_fullscreen else "全屏编辑"
+            # run_expid 仍保持旧图标，其余配置切换为原始 YAML 视图提示
+            if key_suffix == "script":
+                fs_icon = "🗗" if is_fullscreen else "⛶"
+                fs_help = "退出全屏" if is_fullscreen else "全屏编辑"
+            else:
+                fs_icon = "✖" if is_fullscreen else "{ }"
+                fs_help = "退出原始视图" if is_fullscreen else "切换原始 YAML 视图"
             
             # Custom CSS for flat, modern, bold buttons in the header
             st.markdown("""
@@ -900,6 +1562,7 @@ if selected_model:
                 if is_custom:
                     if st.button("↺", key=f"reset_{key_suffix}_{selected_model}", help="重置为系统默认"):
                         reset_func(current_user, selected_model, title)
+                        _clear_buffer(buffer_key)
                         st.rerun()
                 else:
                     st.write("") # Placeholder
@@ -924,36 +1587,47 @@ if selected_model:
                     new_content = uploaded.read().decode("utf-8")
                     save_path = os.path.join(user_config_save_dir, title)
                     save_file_content(save_path, new_content)
+                    _set_buffered_content(buffer_key, new_content)
                     st.success("已保存！")
                     st.rerun()
 
             # Editor
-            # Try to preserve edits across reruns by checking session state
             editor_key = f"editor_{key_suffix}_{selected_model}"
-            
-            # Fix AttributeError: 'NoneType' object has no attribute 'get'
-            # st.session_state.get(editor_key) might return None if initialized but empty
+
+            if body_renderer is not None and not is_fullscreen:
+                body_kwargs = body_kwargs or {}
+                return body_renderer(
+                    content,
+                    editor_key=editor_key,
+                    lang=lang,
+                    lines=lines,
+                    is_fullscreen=is_fullscreen,
+                    selected_model=selected_model,
+                    buffer_key=buffer_key,
+                    **body_kwargs
+                )
+
+            # Default code editor path
             saved_state = st.session_state.get(editor_key)
             if saved_state and isinstance(saved_state, dict):
                 initial_text = saved_state.get('text', content)
             else:
                 initial_text = content
-            
-            # Use minLines/maxLines to enforce height and alignment
+
             editor_options = {
-                "wrap": False, 
-                "showGutter": True, 
+                "wrap": False,
+                "showGutter": True,
                 "autoScrollEditorIntoView": True,
                 "minLines": lines,
                 "maxLines": lines,
                 "scrollBeyondLastLine": False
             }
-            
+
             res = code_editor(
-                initial_text, 
-                lang=lang, 
+                initial_text,
+                lang=lang,
                 key=editor_key,
-                response_mode="debounce",  # ensure latest text is returned without needing an explicit submit
+                response_mode="debounce",
                 options=editor_options,
                 buttons=[{
                     "name": "Copy",
@@ -964,17 +1638,20 @@ if selected_model:
                     "style": {"top": "0.46rem", "right": "0.4rem"}
                 }]
             )
-            # If the editor hasn't emitted any event yet (type/text empty), fallback to the current visible text
             if isinstance(res, dict):
                 if res.get("text") == "" and res.get("type", "") == "":
                     return initial_text
                 return res.get("text", initial_text)
             return initial_text
 
-        # Load contents
-        ds_content = load_file_content(dataset_config_path)
-        md_content = load_file_content(model_config_path)
-        script_content = load_file_content(run_expid_path)
+        # Use buffered contents so Cmd/Ctrl+Enter reruns won't drop unsaved edits
+        buf_ds_key = f"buffer_{current_user}_{selected_model}_dataset_config.yaml"
+        buf_md_key = f"buffer_{current_user}_{selected_model}_model_config.yaml"
+        buf_script_key = f"buffer_{current_user}_{selected_model}_run_expid.py"
+
+        ds_content = _get_buffered_content(buf_ds_key, dataset_config_path)
+        md_content = _get_buffered_content(buf_md_key, model_config_path)
+        script_content = _get_buffered_content(buf_script_key, run_expid_path)
         
         new_ds_content = ds_content
         new_md_content = md_content
@@ -986,17 +1663,22 @@ if selected_model:
         if fs == "dataset":
             new_ds_content = render_editor_section(
                 "dataset_config.yaml", "dataset_config.yaml", ds_content, "yaml", 35, "dataset", "application/x-yaml", 
-                config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config
+                config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config,
+                body_renderer=render_dataset_config_body,
+                buffer_key=buf_ds_key
             )
         elif fs == "model":
             new_md_content = render_editor_section(
                 "model_config.yaml", "model_config.yaml", md_content, "yaml", 35, "model", "application/x-yaml",
-                config_info["model_config.yaml"]["type"] == "custom", reset_user_config
+                config_info["model_config.yaml"]["type"] == "custom", reset_user_config,
+                body_renderer=render_model_config_body,
+                buffer_key=buf_md_key
             )
         elif fs == "script":
             new_script_content = render_editor_section(
                 "run_expid.py", "run_expid.py", script_content, "python", 35, "script", "text/x-python",
-                config_info["run_expid.py"]["type"] == "custom", reset_user_config
+                config_info["run_expid.py"]["type"] == "custom", reset_user_config,
+                buffer_key=buf_script_key
             )
         else:
             # Normal View
@@ -1004,19 +1686,29 @@ if selected_model:
             with col1:
                 new_ds_content = render_editor_section(
                     "dataset_config.yaml", "dataset_config.yaml", ds_content, "yaml", 15, "dataset", "application/x-yaml",
-                    config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config
+                    config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config,
+                    body_renderer=render_dataset_config_body,
+                    buffer_key=buf_ds_key
                 )
             with col2:
                 new_md_content = render_editor_section(
                     "model_config.yaml", "model_config.yaml", md_content, "yaml", 15, "model", "application/x-yaml",
-                    config_info["model_config.yaml"]["type"] == "custom", reset_user_config
+                    config_info["model_config.yaml"]["type"] == "custom", reset_user_config,
+                    body_renderer=render_model_config_body,
+                    buffer_key=buf_md_key
                 )
             
             st.markdown("---")
             new_script_content = render_editor_section(
                 "run_expid.py", "run_expid.py", script_content, "python", 15, "script", "text/x-python",
-                config_info["run_expid.py"]["type"] == "custom", reset_user_config
+                config_info["run_expid.py"]["type"] == "custom", reset_user_config,
+                buffer_key=buf_script_key
             )
+
+        # Persist working copies in session to survive reruns
+        _set_buffered_content(buf_ds_key, new_ds_content)
+        _set_buffered_content(buf_md_key, new_md_content)
+        _set_buffered_content(buf_script_key, new_script_content)
 
         if st.button("💾 保存所有配置", type="primary"):
             # Save configs to user directory
@@ -1030,6 +1722,10 @@ if selected_model:
             save_file_content(os.path.join(user_config_save_dir, "dataset_config.yaml"), new_ds_content)
             save_file_content(os.path.join(user_config_save_dir, "model_config.yaml"), new_md_content)
             save_file_content(os.path.join(user_config_save_dir, "run_expid.py"), new_script_content)
+
+            _clear_buffer(buf_ds_key)
+            _clear_buffer(buf_md_key)
+            _clear_buffer(buf_script_key)
             
             st.toast("配置已保存到您的个人空间！", icon="✅")
             time.sleep(1)
