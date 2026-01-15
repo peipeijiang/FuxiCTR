@@ -22,6 +22,7 @@ import torch
 import torch.distributed as dist
 import os, sys
 import logging
+import math
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
@@ -70,10 +71,34 @@ class BaseModel(nn.Module):
         self.model_dir = os.path.join(kwargs["model_root"], feature_map.dataset_id)
         self.checkpoint = os.path.abspath(os.path.join(self.model_dir, self.model_id + ".model"))
         self.validation_metrics = kwargs["metrics"]
+        self._nan_debug = bool(int(os.environ.get("FUXICTR_DEBUG_NAN", "1")))
         if SummaryWriter and self._is_master:
             self.writer = SummaryWriter(log_dir=os.path.join(self.model_dir, self.model_id))
         else:
             self.writer = None
+
+    def _nan_guard(self, name, value):
+        """Detect non-finite values and raise with simple stats when debug flag is on."""
+        if not self._nan_debug:
+            return
+        if value is None:
+            return
+        if torch.is_tensor(value):
+            finite = torch.isfinite(value)
+            if finite.all():
+                return
+            stats = {}
+            if finite.any():
+                stats["min"] = value[finite].min().item()
+                stats["max"] = value[finite].max().item()
+                stats["mean"] = value[finite].mean().item()
+            raise RuntimeError(f"[NaNGuard] {name} has non-finite values. finite_stats={stats}")
+        if isinstance(value, (list, tuple)):
+            for idx, v in enumerate(value):
+                self._nan_guard(f"{name}[{idx}]", v)
+            return
+        if isinstance(value, (float, int)) and not math.isfinite(value):
+            raise RuntimeError(f"[NaNGuard] {name} is non-finite: {value}")
 
     def compile(self, optimizer, loss, lr):
         self.optimizer = get_optimizer(optimizer, self.parameters(), lr)
@@ -222,6 +247,12 @@ class BaseModel(nn.Module):
         main_loss = self.add_loss(return_dict, y_true)
         reg_loss = self.regularization_loss()
         loss = main_loss + reg_loss
+
+        self._nan_guard("y_pred", return_dict.get("y_pred"))
+        self._nan_guard("y_true", y_true)
+        self._nan_guard("main_loss", main_loss)
+        self._nan_guard("reg_loss", reg_loss)
+        self._nan_guard("loss", loss)
         
         loss.backward()
         self._sync_gradients()
