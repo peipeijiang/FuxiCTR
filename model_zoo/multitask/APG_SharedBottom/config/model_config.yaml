@@ -15,7 +15,11 @@ Base:
 APG_SharedBottom_test:
     model: APG_SharedBottom
     dataset_id: all_seeds_processed
-    loss: [binary_crossentropy, binary_crossentropy]
+    loss: 
+        - name: FocalLoss
+          params: {gamma: 2.0, alpha: 0.25}
+        - name: FocalLoss
+          params: {gamma: 2.0, alpha: 0.25}
     metrics: [AUC, KS, recall, precision, f1]
     task: [binary_classification, binary_classification]
     num_tasks: 2
