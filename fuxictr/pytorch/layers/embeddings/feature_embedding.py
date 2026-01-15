@@ -164,6 +164,13 @@ class FeatureEmbeddingDict(nn.Module):
                 continue
             if feature in embedding_dict:
                 feature_emb_list.append(embedding_dict[feature])
+        
+        if len(feature_emb_list) == 0:
+            print("[DEBUG] feature_emb_list is empty! This causes RuntimeError in torch.cat.")
+            print(f"[DEBUG] filters - feature_list: {feature_list}, feature_source: {feature_source}, feature_type: {feature_type}")
+            print(f"[DEBUG] embedding_dict keys: {list(embedding_dict.keys())}")
+            print(f"[DEBUG] _feature_map keys: {list(self._feature_map.features.keys())}")
+            
         if flatten_emb:
             feature_emb = torch.cat(feature_emb_list, dim=-1)
         else:
