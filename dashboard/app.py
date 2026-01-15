@@ -1430,7 +1430,7 @@ def render_model_config_body(
     sel_cols = st.columns([0.94, 0.06], vertical_alignment="bottom")
     with sel_cols[0]:
         selected_name = st.selectbox(
-            "选择模型配置",
+            "选择模型配置(experiment_id)",
             config_names,
             index=default_idx if config_names else None,
             key=select_key,
@@ -2515,7 +2515,7 @@ if selected_model:
             st.session_state["_mkl_threading_layer"] = mkl_threading_layer
             st.session_state["_device_list"] = selected_devices[:]
         with col_p3:
-            num_workers = st.number_input("Num Workers", min_value=1, max_value=16, value=3, help="数据加载线程数")
+            num_workers = st.number_input("Num Workers", min_value=0, max_value=16, value=3, help="数据加载线程数，0 表示在主线程加载")
             # 保存到session state
             st.session_state["_num_workers"] = num_workers
 
