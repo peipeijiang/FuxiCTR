@@ -57,6 +57,13 @@ def get_optimizer(optimizer, params, lr):
 
 def get_loss(loss):
     params = {}
+    # Allow passing a single loss wrapped in a list (common in configs)
+    if isinstance(loss, (list, tuple)):
+        if len(loss) == 1:
+            loss = loss[0]
+        else:
+            raise NotImplementedError("loss list with len>1 is not supported in single-task models: {}".format(loss))
+
     if isinstance(loss, dict):
         params = loss.get("params", {}) or {}
         loss = loss.get("name") or loss.get("fn")
@@ -65,10 +72,10 @@ def get_loss(loss):
             loss = "binary_cross_entropy"
     try:
         loss_fn = getattr(torch.functional.F, loss)
-    except:
-        try: 
+    except Exception:
+        try:
             loss_fn = eval("losses." + str(loss))
-        except:
+        except Exception:
             raise NotImplementedError("loss={} is not supported.".format(loss))      
     if params:
         return partial(loss_fn, **params)
