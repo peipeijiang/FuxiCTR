@@ -1027,6 +1027,8 @@ def render_dataset_config_body(
 
         cols = list(df.columns)
         cat = [c for c in cols if c.endswith("_tag")]
+        if "product" in cols:
+            cat.append("product")
         num = [c for c in cols if c.endswith("_cnt")]
         seq = [c for c in cols if c.endswith("_textlist")]
 
