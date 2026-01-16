@@ -1368,22 +1368,31 @@ def render_dataset_config_body(
 
 
 def _render_loss_section(label, value, widget_key):
-    """可视化的 Loss 编辑器"""
-    # 策略：支持 Dict (单Loss) 或 List[Dict] (多Loss) 的可视化
+    """可视化的 Loss 编辑器，兼容混合类型（String/Dict）和多任务"""
     
-    is_single_dict = False
+    # 1. 统一正规化为 List 进行编辑
+    # is_single_structure 标记最初是否是非列表形式（String 或 单Dict），
+    # 用于在保存时如果只有一项，尽可能还原回简洁形式。
+    is_single_structure = False
     items = []
 
-    # 1. 识别结构
     if isinstance(value, (dict, OrderedDict)) and "name" in value:
-        # 单结构：转换为 list 编辑，最后还原
-        is_single_dict = True
+        is_single_structure = True
         items = [value]
-    elif isinstance(value, list) and value and isinstance(value[0], (dict, OrderedDict)):
-        # 复杂列表
-        items = value
+    elif isinstance(value, str):
+        is_single_structure = True
+        items = [value]
+    elif isinstance(value, list) and value:
+        # 只要列表里是 String 或 Dict 就认为是合法 Loss 列表
+        if all(isinstance(x, (str, dict, OrderedDict)) for x in value):
+            items = value
+        else:
+            return _render_yaml_field(label, value, widget_key)
+    elif value is None:
+        items = []
+        is_single_structure = True # 视为原本为空的单项
     else:
-        # 简单情况（Str/List[Str]）或者 None，回退通用渲染
+        # 其他情况回退
         return _render_yaml_field(label, value, widget_key)
 
     st.markdown(f"##### {label}")
@@ -1399,42 +1408,66 @@ def _render_loss_section(label, value, widget_key):
     for idx, item in enumerate(items):
         cols = st.columns([0.3, 0.6, 0.1], vertical_alignment="center")
         
+        # 解析当前项：支持 String 或 Dict 混合
+        if isinstance(item, str):
+            current_name = item
+            current_params = None
+        elif isinstance(item, (dict, OrderedDict)):
+            current_name = item.get("name", "")
+            current_params = item.get("params", None)
+        else:
+             current_name = ""
+             current_params = None
+        
         # Name field
-        current_name = item.get("name", "")
-        # Use a text input for name
-        new_name = cols[0].text_input("Name", current_name, label_visibility="collapsed", key=f"{widget_key}_{idx}_name")
+        new_name = cols[0].text_input("Name", current_name, label_visibility="collapsed", key=f"{widget_key}_{idx}_name", placeholder="e.g. binary_crossentropy")
         
         # Params field
-        current_params = item.get("params", {})
         params_str = _yaml_dump(current_params).strip() if current_params else ""
-        new_params_str = cols[1].text_area("Params", params_str, height=68, label_visibility="collapsed", key=f"{widget_key}_{idx}_params")
+        new_params_str = cols[1].text_area("Params", params_str, height=68, label_visibility="collapsed", key=f"{widget_key}_{idx}_params", placeholder="参数 (可选)")
         
         # Delete button
         if cols[2].button("✕", key=f"{widget_key}_{idx}_del"):
-            continue # Skip adding to new_items
+            continue # Skip adding
             
         # Reconstruct item
-        try:
-             # simple safe load for params
-             parsed_params = _convert_text_to_value(new_params_str, {}, "params")
-        except:
-             parsed_params = current_params
+        parsed_params = None
+        if new_params_str.strip():
+            try:
+                 parsed_params = _convert_text_to_value(new_params_str, {}, "params")
+            except:
+                 parsed_params = current_params
 
-        new_item = OrderedDict()
-        new_item["name"] = new_name
-        if parsed_params:
+        # 智能保存：如果没有参数，存为 String；否则存为 Dict
+        if not parsed_params:
+            if new_name: # 忽略空名
+                new_item = new_name 
+            else:
+                continue # 忽略空行
+        else:
+            new_item = OrderedDict()
+            new_item["name"] = new_name
             new_item["params"] = parsed_params
+        
         new_items.append(new_item)
 
-    if st.button("➕ 添加 Loss (Add)", key=f"{widget_key}_add"):
-        new_items.append({"name": "FocalLoss", "params": {"gamma": 2.0, "alpha": 0.75}})
+    # 底部添加按钮栏
+    add_cols = st.columns([0.2, 0.25, 0.55])
+    if add_cols[0].button("✚ BCE", key=f"{widget_key}_add_bce", help="添加 binary_crossentropy"):
+        new_items.append("binary_crossentropy")
+        st.rerun()
+    if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss"):
+        new_items.append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
+        st.rerun()
     
-    # 还原结构
-    if is_single_dict:
-        # 如果原本是单 Loss，且编辑后还是 1 个，保持单 Loss 结构
+    # 还原结构逻辑
+    if is_single_structure:
+        # 如果原本是单项，且现在还是 1 项 -> 还原为单项（String 或 Dict）
+        # 这样保持配置文件的简洁性
         if len(new_items) == 1:
             return new_items[0]
-        # 否则（变多了或变没了），作为 List 返回（变没了就是空List）
+        elif len(new_items) == 0:
+            return None
     
     return new_items
 

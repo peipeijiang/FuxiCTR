@@ -400,10 +400,24 @@ def run_inference(model, feature_map, params, args):
                 # Predict
                 with torch.no_grad():
                     pred_dict = model.forward(batch_data)
-                    pred = pred_dict["y_pred"]
                     
-                    # Apply sigmoid if using logits task (standard forward returns logits in this mode)
-                    if hasattr(model, 'task') and model.task == "binary_classification_logits":
+                    # Extract prediction tensor
+                    if "y_pred" in pred_dict:
+                        pred = pred_dict["y_pred"]
+                    elif hasattr(feature_map, 'labels'): 
+                        # Multi-task case: concat predictions in label order
+                        # FuxiCTR MultiTaskModel returns dict keys as "{label}_pred"
+                        preds = [pred_dict[f"{lbl}_pred"] for lbl in feature_map.labels]
+                        pred = torch.cat(preds, dim=1)
+                    
+                    # Apply sigmoid if using logits task
+                    if hasattr(model, 'task_list'): # Multi-task case
+                        for i, task_name in enumerate(model.task_list):
+                            if task_name == "binary_classification_logits":
+                                pred[:, i] = torch.sigmoid(pred[:, i])
+                            else:
+                                pass
+                    elif hasattr(model, 'task') and model.task == "binary_classification_logits": # Single-task case
                         pred = torch.sigmoid(pred)
                         
                     batch_preds = pred.data.cpu().numpy().reshape(-1)
