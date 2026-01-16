@@ -404,15 +404,14 @@ class BaseModel(nn.Module):
         with torch.no_grad():
             y_pred = []
             if self._verbose > 0 and self._is_master:
-                pred = return_dict["y_pred"]
-                if self.task == "binary_classification_logits":
-                    pred = torch.sigmoid(pred)
-                y_pred.extend(predr, disable=False, file=sys.stdout)
+                data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
                 pred = return_dict["y_pred"]
                 if self.task == "binary_classification_logits":
                     pred = torch.sigmoid(pred)
+                elif self._batch_index == 0 and self._is_master:
+                     self._log("[Predict] Task={}, Sigmoid NOT applied. Pred range: {} to {}".format(self.task, pred.min().item(), pred.max().item()))
                 y_pred.extend(pred.data.cpu().numpy().reshape(-1))
             y_pred = np.array(y_pred, np.float64)
             if gather_outputs:
