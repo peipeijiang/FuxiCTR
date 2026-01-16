@@ -12,6 +12,8 @@ import json
 import base64
 import copy
 import psutil
+import re
+import socket
 from datetime import datetime
 from code_editor import code_editor
 from collections import OrderedDict
@@ -413,6 +415,91 @@ def _aggregate_gpu_usage(pids):
     # Round to 1 decimal place for display
     gpu_utils = [round(util, 1) for util in gpu_utils]
     return gpu_utils, gpu_mems
+
+
+def _guess_public_host():
+    """Best-effort to pick a non-loopback IPv4 for external access."""
+    candidates = []
+    try:
+        for if_name, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET:
+                    ip = addr.address
+                    if ip.startswith("127."):
+                        continue
+                    candidates.append(ip)
+    except Exception:
+        pass
+
+    # Try socket trick to detect egress IP
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if not ip.startswith("127."):
+                candidates.insert(0, ip)
+    except Exception:
+        pass
+
+    for ip in candidates:
+        if ip:
+            return ip
+    return None
+
+
+def detect_tensorboard_process():
+    """Detect a running TensorBoard process and return (url, pid, port).
+
+    Strategy:
+    1) Scan processes whose name/cmdline contains "tensorboard".
+    2) Prefer an actual listening port from proc.connections(kind="inet").
+    3) Fallback to parsing cmdline flags: --port / --host.
+    """
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            info = proc.info or {}
+            name = (info.get("name") or "").lower()
+            cmdline = info.get("cmdline") or []
+            joined_cmd = " ".join(cmdline).lower()
+
+            if "tensorboard" not in name and "tensorboard" not in joined_cmd:
+                continue
+
+            host = None
+            port = None
+
+            try:
+                for conn in proc.connections(kind="inet"):
+                    if conn.status == psutil.CONN_LISTEN:
+                        port = conn.laddr.port
+                        host = conn.laddr.ip if conn.laddr and conn.laddr.ip not in ("0.0.0.0", None, "") else None
+                        break
+            except psutil.Error:
+                pass
+
+            if port is None:
+                m = re.search(r"--port(?:=|\s)(\d+)", joined_cmd)
+                if m:
+                    port = m.group(1)
+            if host is None:
+                m = re.search(r"--host(?:=|\s)([^\s]+)", joined_cmd)
+                if m:
+                    host = m.group(1)
+            # If still unknown/loopback, try to guess a non-loopback IP for remote access.
+            if host in (None, "", "0.0.0.0", "localhost"):
+                guessed = _guess_public_host()
+                host = guessed or "localhost"
+            try:
+                port_int = int(port) if port is not None else None
+            except Exception:
+                port_int = None
+
+            if port_int:
+                url = f"http://{host}:{port_int}"
+                return url, info.get("pid"), port_int
+        return None, None, None
+    except Exception:
+        return None, None, None
 
 # --- Run History Helpers ---
 def _history_path(username):
@@ -3095,6 +3182,34 @@ if selected_model:
             
             st.markdown("---")
             
+            # TensorBoard URL (server-friendly). Attempt auto-detect, fallback to env/default.
+            detected_url, detected_pid, detected_port = detect_tensorboard_process()
+            default_tb_host = os.environ.get("TB_HOST") or _guess_public_host()
+            default_tb_port = os.environ.get("TB_PORT", "6006")
+            default_tb_url = detected_url or (f"http://{default_tb_host}:{default_tb_port}" if default_tb_host else "")
+
+            # Allow prefill before widget instantiation to avoid Streamlit mutation error.
+            if "tb_url_prefill" in st.session_state:
+                st.session_state.tb_url_input = st.session_state.tb_url_prefill
+                del st.session_state.tb_url_prefill
+            if "tb_url_input" not in st.session_state:
+                st.session_state.tb_url_input = default_tb_url
+
+            tb_url = st.text_input(
+                "可视化访问地址",
+                value=st.session_state.tb_url_input,
+                help="远程访问请填 http://<服务器IP或域名>:<端口>（不要 localhost，确保端口已放行）",
+                placeholder="http://<服务器IP或域名>:6006",
+                key="tb_url_input",
+            )
+
+            status_msg = "未检测到运行中的 TensorBoard 进程。"
+            if detected_url:
+                status_msg = f"检测到 TensorBoard 进程 (PID {detected_pid})，监听 {detected_port}。"
+            st.caption(status_msg)
+            if not detected_url and not default_tb_host:
+                st.caption("提示：服务器访问请填公网 IP/域名，例如 http://<server-ip>:6006。")
+
             col_launch, col_open = st.columns(2)
             
             with col_launch:
@@ -3106,8 +3221,8 @@ if selected_model:
             
             with col_open:
                 st.markdown(
-                    """
-                    <a href="http://localhost:6006" target="_blank" style="text-decoration: none;">
+                    f"""
+                    <a href="{tb_url}" target="_blank" style="text-decoration: none;">
                         <div style="
                             display: flex;
                             justify-content: center;
@@ -3128,6 +3243,14 @@ if selected_model:
                     """,
                     unsafe_allow_html=True
                 )
+
+            # Auto-detect and auto-fill button
+            if st.button("🔍 自动检测端口并填充", use_container_width=True):
+                if detected_url:
+                    st.session_state.tb_url_prefill = detected_url
+                    st.rerun()
+                else:
+                    st.warning("未检测到 TensorBoard 进程，请先启动再重试。")
 
             st.markdown("</div>", unsafe_allow_html=True)
             
