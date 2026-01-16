@@ -400,7 +400,13 @@ def run_inference(model, feature_map, params, args):
                 # Predict
                 with torch.no_grad():
                     pred_dict = model.forward(batch_data)
-                    batch_preds = pred_dict["y_pred"].data.cpu().numpy().reshape(-1)
+                    pred = pred_dict["y_pred"]
+                    
+                    # Apply sigmoid if using logits task (standard forward returns logits in this mode)
+                    if hasattr(model, 'task') and model.task == "binary_classification_logits":
+                        pred = torch.sigmoid(pred)
+                        
+                    batch_preds = pred.data.cpu().numpy().reshape(-1)
 
                 # Split predictions by file and accumulate directly to file_writers
                 for block_idx in file_indices_in_batch:
