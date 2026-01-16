@@ -431,12 +431,12 @@ class MultiTaskModel(BaseModel):
             if self._verbose > 0 and self._is_master:
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
-                retupred = return_dict["{}_pred".format(labels[i])]
+                return_dict = self.forward(batch_data)
+                for i in range(len(labels)):
+                    pred = return_dict["{}_pred".format(labels[i])]
                     if self.task_list[i] == "binary_classification_logits":
                         pred = torch.sigmoid(pred)
-                    y_pred_all[labels[i]].extend(pred
-                    y_pred_all[labels[i]].extend(
-                        return_dict["{}_pred".format(labels[i])].data.cpu().numpy().reshape(-1))
+                    y_pred_all[labels[i]].extend(pred.data.cpu().numpy().reshape(-1))
             for i in range(len(labels)):
                 y_pred = np.array(y_pred_all[labels[i]], np.float64)
                 if gather_outputs:
