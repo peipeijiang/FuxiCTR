@@ -147,9 +147,13 @@ class MultiTaskModel(BaseModel):
             self.loss_weight = 'EQ'
         
         if isinstance(task, list):
-            assert len(task) == num_tasks, "the number of tasks must equal the length of \"task\""
-            self.task_list = task
-            self.output_activation = nn.ModuleList([self.get_output_activation(str(t)) for t in task])
+            if len(task) == 1 and num_tasks > 1:
+                self.task_list = task * num_tasks
+                self.output_activation = nn.ModuleList([self.get_output_activation(str(task[0])) for _ in range(num_tasks)])
+            else:
+                assert len(task) == num_tasks, "the number of tasks must equal the length of \"task\""
+                self.task_list = task
+                self.output_activation = nn.ModuleList([self.get_output_activation(str(t)) for t in task])
         else:
             self.task_list = [task] * num_tasks
             self.output_activation = nn.ModuleList(
