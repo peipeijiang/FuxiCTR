@@ -1045,9 +1045,22 @@ def render_dataset_config_body(
         if cat:
             new_feature_cols.append(OrderedDict({"name": cat, "type": "categorical", "dtype": "int", "active": True}))
         if num:
-            new_feature_cols.append(OrderedDict({"name": num, "type": "numeric", "dtype": "float", "active": True}))
+            new_feature_cols.append(OrderedDict({
+                "name": num, 
+                "type": "numeric", 
+                "dtype": "float", 
+                "active": True, 
+                "normalizer": "StandardScaler"
+            }))
         if seq:
-            new_feature_cols.append(OrderedDict({"name": seq, "type": "sequence", "dtype": "int", "active": True}))
+            new_feature_cols.append(OrderedDict({
+                "name": seq, 
+                "type": "sequence", 
+                "dtype": "str", 
+                "active": True, 
+                "max_len": 15, 
+                "encoder": "MaskedAveragePooling"
+            }))
 
         if not new_feature_cols:
             st.warning("未识别到符合命名规则的特征列，未更新 feature_cols。")
@@ -1354,6 +1367,78 @@ def render_dataset_config_body(
     return _yaml_dump(data)
 
 
+def _render_loss_section(label, value, widget_key):
+    """可视化的 Loss 编辑器"""
+    # 策略：支持 Dict (单Loss) 或 List[Dict] (多Loss) 的可视化
+    
+    is_single_dict = False
+    items = []
+
+    # 1. 识别结构
+    if isinstance(value, (dict, OrderedDict)) and "name" in value:
+        # 单结构：转换为 list 编辑，最后还原
+        is_single_dict = True
+        items = [value]
+    elif isinstance(value, list) and value and isinstance(value[0], (dict, OrderedDict)):
+        # 复杂列表
+        items = value
+    else:
+        # 简单情况（Str/List[Str]）或者 None，回退通用渲染
+        return _render_yaml_field(label, value, widget_key)
+
+    st.markdown(f"##### {label}")
+
+    new_items = []
+    
+    # Header
+    cols_header = st.columns([0.3, 0.6, 0.1])
+    cols_header[0].caption("Loss Name")
+    cols_header[1].caption("Params (YAML/JSON)")
+    # cols_header[2].caption("Del")
+
+    for idx, item in enumerate(items):
+        cols = st.columns([0.3, 0.6, 0.1], vertical_alignment="center")
+        
+        # Name field
+        current_name = item.get("name", "")
+        # Use a text input for name
+        new_name = cols[0].text_input("Name", current_name, label_visibility="collapsed", key=f"{widget_key}_{idx}_name")
+        
+        # Params field
+        current_params = item.get("params", {})
+        params_str = _yaml_dump(current_params).strip() if current_params else ""
+        new_params_str = cols[1].text_area("Params", params_str, height=68, label_visibility="collapsed", key=f"{widget_key}_{idx}_params")
+        
+        # Delete button
+        if cols[2].button("✕", key=f"{widget_key}_{idx}_del"):
+            continue # Skip adding to new_items
+            
+        # Reconstruct item
+        try:
+             # simple safe load for params
+             parsed_params = _convert_text_to_value(new_params_str, {}, "params")
+        except:
+             parsed_params = current_params
+
+        new_item = OrderedDict()
+        new_item["name"] = new_name
+        if parsed_params:
+            new_item["params"] = parsed_params
+        new_items.append(new_item)
+
+    if st.button("➕ 添加 Loss (Add)", key=f"{widget_key}_add"):
+        new_items.append({"name": "FocalLoss", "params": {"gamma": 2.0, "alpha": 0.75}})
+    
+    # 还原结构
+    if is_single_dict:
+        # 如果原本是单 Loss，且编辑后还是 1 个，保持单 Loss 结构
+        if len(new_items) == 1:
+            return new_items[0]
+        # 否则（变多了或变没了），作为 List 返回（变没了就是空List）
+    
+    return new_items
+
+
 def render_model_config_body(
     content,
     *,
@@ -1505,7 +1590,10 @@ def render_model_config_body(
 
     for field in complex_fields:
         widget_key = f"{editor_key}_{selected_name}_{field}"
-        entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
+        if field == "loss":
+            entry[field] = _render_loss_section(field, entry.get(field), widget_key)
+        else:
+            entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
 
     data[selected_name] = entry
 
