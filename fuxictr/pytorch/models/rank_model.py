@@ -67,6 +67,7 @@ class BaseModel(nn.Module):
         self._verbose = kwargs["verbose"]
         self.feature_map = feature_map
         self.output_activation = self.get_output_activation(task)
+        self.task = task
         self.model_id = model_id
         self.model_dir = os.path.join(kwargs["model_root"], feature_map.dataset_id)
         self.checkpoint = os.path.abspath(os.path.join(self.model_dir, self.model_id + ".model"))
@@ -84,10 +85,18 @@ class BaseModel(nn.Module):
         if value is None:
             return
         if torch.is_tensor(value):
+            if value.numel() == 0:
+                raise RuntimeError(f"[NaNGuard] {name} is empty. shape={tuple(value.shape)}")
             finite = torch.isfinite(value)
             if finite.all():
                 return
-            stats = {}
+            stats = {
+                "shape": tuple(value.shape),
+                "numel": value.numel(),
+                "finite_count": int(finite.sum().item()),
+                "nan_count": int(torch.isnan(value).sum().item()),
+                "inf_count": int(torch.isinf(value).sum().item()),
+            }
             if finite.any():
                 stats["min"] = value[finite].min().item()
                 stats["max"] = value[finite].max().item()
@@ -242,11 +251,53 @@ class BaseModel(nn.Module):
         self.optimizer.zero_grad()
         return_dict = self.forward(batch_data)
         y_true = self.get_labels(batch_data)
+
+        # Catch empty batches early to provide actionable diagnostics
+        if y_true is None or (torch.is_tensor(y_true) and y_true.numel() == 0):
+            raise RuntimeError("[NaNGuard] Empty batch encountered: y_true has no elements. Check data loader / glob pattern.")
         
         # Calculate loss components for logging
         main_loss = self.add_loss(return_dict, y_true)
         reg_loss = self.regularization_loss()
         loss = main_loss + reg_loss
+
+        # If loss is non-finite, log key stats before guard raises
+        if torch.is_tensor(main_loss) and not torch.isfinite(main_loss):
+            with torch.no_grad():
+                y_pred = return_dict.get("y_pred")
+                pred_stats = None
+                if y_pred is not None and torch.is_tensor(y_pred) and y_pred.numel() > 0:
+                    finite = torch.isfinite(y_pred)
+                    pred_stats = {
+                        "shape": tuple(y_pred.shape),
+                        "numel": y_pred.numel(),
+                        "finite": int(finite.sum().item()),
+                        "nan": int(torch.isnan(y_pred).sum().item()),
+                        "inf": int(torch.isinf(y_pred).sum().item()),
+                    }
+                    if finite.any():
+                        pred_stats.update({
+                            "min": y_pred[finite].min().item(),
+                            "max": y_pred[finite].max().item(),
+                            "mean": y_pred[finite].mean().item(),
+                        })
+                label_stats = None
+                if torch.is_tensor(y_true) and y_true.numel() > 0:
+                    finite = torch.isfinite(y_true)
+                    label_stats = {
+                        "shape": tuple(y_true.shape),
+                        "numel": y_true.numel(),
+                        "finite": int(finite.sum().item()),
+                        "nan": int(torch.isnan(y_true).sum().item()),
+                        "inf": int(torch.isinf(y_true).sum().item()),
+                    }
+                    if finite.any():
+                        label_stats.update({
+                            "min": y_true[finite].min().item(),
+                            "max": y_true[finite].max().item(),
+                            "mean": y_true[finite].mean().item(),
+                        })
+                self._log(f"[NaNGuard] main_loss non-finite. y_pred_stats={pred_stats} y_true_stats={label_stats}")
 
         self._nan_guard("y_pred", return_dict.get("y_pred"))
         self._nan_guard("y_true", y_true)
@@ -318,7 +369,10 @@ class BaseModel(nn.Module):
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
-                y_pred.extend(return_dict["y_pred"].data.cpu().numpy().reshape(-1))
+                pred = return_dict["y_pred"]
+                if self.task == "binary_classification_logits":
+                    pred = torch.sigmoid(pred)
+                y_pred.extend(pred.data.cpu().numpy().reshape(-1))
                 y_true.extend(self.get_labels(batch_data).data.cpu().numpy().reshape(-1))
                 if self.feature_map.group_id is not None:
                     group_id.extend(self.get_group_id(batch_data).numpy().reshape(-1))
@@ -350,10 +404,16 @@ class BaseModel(nn.Module):
         with torch.no_grad():
             y_pred = []
             if self._verbose > 0 and self._is_master:
-                data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
+                pred = return_dict["y_pred"]
+                if self.task == "binary_classification_logits":
+                    pred = torch.sigmoid(pred)
+                y_pred.extend(predr, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
-                y_pred.extend(return_dict["y_pred"].data.cpu().numpy().reshape(-1))
+                pred = return_dict["y_pred"]
+                if self.task == "binary_classification_logits":
+                    pred = torch.sigmoid(pred)
+                y_pred.extend(pred.data.cpu().numpy().reshape(-1))
             y_pred = np.array(y_pred, np.float64)
             if gather_outputs:
                 y_pred = self._gather_numpy(y_pred)
@@ -375,6 +435,8 @@ class BaseModel(nn.Module):
     def get_output_activation(self, task):
         if task == "binary_classification":
             return nn.Sigmoid()
+        elif task == "binary_classification_logits":
+            return nn.Identity()
         elif task == "regression":
             return nn.Identity()
         else:

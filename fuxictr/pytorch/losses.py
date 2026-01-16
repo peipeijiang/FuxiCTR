@@ -17,23 +17,40 @@ def _apply_reduction(loss_tensor, reduction="mean"):
     return loss_tensor.mean()
 
 
-def FocalLoss(y_pred, y_true, gamma=2.0, alpha=0.25, reduction="mean", eps=1e-8):
-    """Binary focal loss operating on sigmoid probabilities.
+def FocalLoss(y_pred, y_true, gamma=2.0, alpha=0.25, reduction="mean", eps=1e-6, from_logits=False):
+    """Binary focal loss.
 
     Args:
-        y_pred (Tensor): Predicted probabilities in range [0, 1].
+        y_pred (Tensor): Predicted probabilities (if from_logits=False) or logits (if from_logits=True).
         y_true (Tensor): Binary targets with the same shape as y_pred.
         gamma (float): Focusing parameter that down-weights easy samples.
         alpha (float): Class balancing factor (applied to positive class).
         reduction (str): "mean", "sum", or "none".
-        eps (float): Numerical stability constant for log operations.
+        eps (float): Numerical stability constant (used only for passed probabilities).
+        from_logits (bool): Whether y_pred contains raw logits.
     """
     y_true = y_true.to(y_pred.dtype)
-    y_pred = torch.clamp(y_pred, eps, 1.0 - eps)
-    p_t = torch.where(y_true > 0, y_pred, 1.0 - y_pred)
-    alpha_t = torch.where(y_true > 0, torch.full_like(y_pred, alpha), torch.full_like(y_pred, 1.0 - alpha))
-    focal_weight = alpha_t * torch.pow(1.0 - p_t, gamma)
-    loss = -focal_weight * torch.log(p_t)
+    
+    if from_logits:
+        # Numerically stable version using logits
+        bce_loss = F.binary_cross_entropy_with_logits(y_pred, y_true, reduction="none")
+        # bce_loss is -log(p_t) so p_t = exp(-bce_loss)
+        p_t = torch.exp(-bce_loss)
+        alpha_t = torch.where(y_true > 0, torch.full_like(y_pred, alpha), torch.full_like(y_pred, 1.0 - alpha))
+        focal_weight = alpha_t * torch.pow(1.0 - p_t, gamma)
+        loss = focal_weight * bce_loss
+    else:
+        # Ensure eps is at least machine epsilon for the dtype to avoid p_t==0 leading to inf
+        eps = max(eps, torch.finfo(y_pred.dtype).eps)
+        y_pred = torch.clamp(y_pred, eps, 1.0 - eps)
+        p_t = torch.where(y_true > 0, y_pred, 1.0 - y_pred)
+        alpha_t = torch.where(y_true > 0, torch.full_like(y_pred, alpha), torch.full_like(y_pred, 1.0 - alpha))
+        focal_weight = alpha_t * torch.pow(1.0 - p_t, gamma)
+        loss = -focal_weight * torch.log(p_t)
+        # Guard against any residual non-finite values
+        if not torch.isfinite(loss).all():
+            loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+            
     return _apply_reduction(loss, reduction)
 
 

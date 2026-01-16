@@ -148,8 +148,10 @@ class MultiTaskModel(BaseModel):
         
         if isinstance(task, list):
             assert len(task) == num_tasks, "the number of tasks must equal the length of \"task\""
+            self.task_list = task
             self.output_activation = nn.ModuleList([self.get_output_activation(str(t)) for t in task])
         else:
+            self.task_list = [task] * num_tasks
             self.output_activation = nn.ModuleList(
                 [self.get_output_activation(task) for _ in range(num_tasks)]
             )
@@ -373,8 +375,10 @@ class MultiTaskModel(BaseModel):
                 return_dict = self.forward(batch_data)
                 batch_y_true = self.get_labels(batch_data)
                 for i in range(len(labels)):
-                    y_pred_all[labels[i]].extend(
-                        return_dict["{}_pred".format(labels[i])].data.cpu().numpy().reshape(-1))
+                    pred = return_dict["{}_pred".format(labels[i])]
+                    if self.task_list[i] == "binary_classification_logits":
+                        pred = torch.sigmoid(pred)
+                    y_pred_all[labels[i]].extend(pred.data.cpu().numpy().reshape(-1))
                     y_true_all[labels[i]].extend(batch_y_true[i].data.cpu().numpy().reshape(-1))
                 if self.feature_map.group_id is not None:
                     group_id.extend(self.get_group_id(batch_data).numpy().reshape(-1))
@@ -427,8 +431,10 @@ class MultiTaskModel(BaseModel):
             if self._verbose > 0 and self._is_master:
                 data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
-                return_dict = self.forward(batch_data)
-                for i in range(len(labels)):
+                retupred = return_dict["{}_pred".format(labels[i])]
+                    if self.task_list[i] == "binary_classification_logits":
+                        pred = torch.sigmoid(pred)
+                    y_pred_all[labels[i]].extend(pred
                     y_pred_all[labels[i]].extend(
                         return_dict["{}_pred".format(labels[i])].data.cpu().numpy().reshape(-1))
             for i in range(len(labels)):
