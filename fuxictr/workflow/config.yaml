@@ -1,0 +1,23 @@
+# Workflow configuration
+
+servers:
+  server_21:
+    host: "your-server-21-host"
+    port: 22
+    username: "username"
+    key_path: "/path/to/private/key"
+
+storage:
+  shared_dir: "/mnt/shared_data"
+  staging_dir: "/data/staging"
+  checkpoint_dir: "/data/checkpoints"
+
+transfer:
+  chunk_size: 10485760  # 10MB
+  max_retries: 3
+  parallel_workers: 4
+  verify_checksum: true
+
+task:
+  heartbeat_interval: 30
+  log_rotation_size: 104857600  # 100MB
