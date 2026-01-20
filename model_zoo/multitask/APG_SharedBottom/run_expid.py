@@ -177,7 +177,6 @@ def run_inference(model, feature_map, params, args):
                             with open(lock_file, 'r') as f:
                                 content = f.read()
                                 if 'PID:' in content:
-                                    import re
                                     match = re.search(r'PID:\s*(\d+)', content)
                                     if match:
                                         pid = int(match.group(1))
