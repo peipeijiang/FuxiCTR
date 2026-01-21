@@ -1812,7 +1812,8 @@ with st.sidebar:
     if st.session_state.prev_user in USER_OPTIONS:
         default_index = USER_OPTIONS.index(st.session_state.prev_user)
 
-    current_user = st.selectbox("用户名", USER_OPTIONS, index=default_index, help="用于任务限制（每位用户最多 3 个任务）。")
+    # Use key to maintain state and avoid issues
+    current_user = st.selectbox("用户名", USER_OPTIONS, index=default_index, key="user_selector", help="用于任务限制（每位用户最多 3 个任务）。")
     
     # Detect User Switch
     if current_user != st.session_state.prev_user:
