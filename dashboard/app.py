@@ -1807,6 +1807,10 @@ with st.sidebar:
     if "prev_user" not in st.session_state:
         st.session_state.prev_user = "admin"
 
+    # Initialize selected_model in session_state
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = None
+
     # Ensure prev_user is in options
     default_index = 0
     if st.session_state.prev_user in USER_OPTIONS:
@@ -1814,7 +1818,7 @@ with st.sidebar:
 
     # Use key to maintain state and avoid issues
     current_user = st.selectbox("用户名", USER_OPTIONS, index=default_index, key="user_selector", help="用于任务限制（每位用户最多 3 个任务）。")
-    
+
     # Detect User Switch
     if current_user != st.session_state.prev_user:
         st.session_state.prev_user = current_user
@@ -1822,6 +1826,7 @@ with st.sidebar:
         st.session_state.run_pid = None
         st.session_state.run_logfile = None
         st.session_state.running_model = None
+        st.session_state.selected_model = None  # Also clear selected model
         st.rerun()
 
     if not current_user:
@@ -1829,8 +1834,17 @@ with st.sidebar:
 
     st.markdown("### 📍 模型选择")
     models = get_models(MODEL_ZOO_DIR)
+    # Get default index for model selector
+    default_model_index = 0
+    if st.session_state.selected_model and st.session_state.selected_model in models:
+        default_model_index = models.index(st.session_state.selected_model)
+
     # Use key to maintain state and avoid double-click issues
-    selected_model = st.selectbox("选择模型", models, label_visibility="collapsed", key="model_selector")
+    selected_model = st.selectbox("选择模型", models, label_visibility="collapsed", index=default_model_index, key="model_selector")
+    # Update session_state when model changes
+    if selected_model != st.session_state.selected_model:
+        st.session_state.selected_model = selected_model
+
     if selected_model:
         st.caption(f"路径：`model_zoo/{selected_model}`")
 
