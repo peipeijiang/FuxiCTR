@@ -1828,7 +1828,8 @@ with st.sidebar:
 
     st.markdown("### 📍 模型选择")
     models = get_models(MODEL_ZOO_DIR)
-    selected_model = st.selectbox("选择模型", models, label_visibility="collapsed")
+    # Use key to maintain state and avoid double-click issues
+    selected_model = st.selectbox("选择模型", models, label_visibility="collapsed", key="model_selector")
     if selected_model:
         st.caption(f"路径：`model_zoo/{selected_model}`")
 
@@ -3055,7 +3056,17 @@ if selected_model:
                 if st.session_state.running_model == selected_model:
                     st.success(f"🟢 **运行中** (PID: {st.session_state.run_pid}) | 用户: {current_user}")
                 else:
-                    st.info(f"后台运行中：**{st.session_state.running_model}**")
+                    # Check if selected_model is running in background (from task states)
+                    active_tasks = get_active_tasks()
+                    selected_model_task = None
+                    for task in active_tasks:
+                        if task.get('model') == selected_model and task.get('username') == current_user:
+                            selected_model_task = task
+                            break
+                    if selected_model_task:
+                        st.success(f"🟢 **运行中** (PID: {selected_model_task['pid']}) | 用户: {current_user}")
+                    else:
+                        st.info(f"后台运行中：**{st.session_state.running_model}**")
             else:
                 # Cleanup if process finished
                 if finished_exit_code is None:
@@ -3070,17 +3081,41 @@ if selected_model:
                 st.info(message)
                 st.rerun()
         else:
-            st.info("⚪ **空闲**")
+            # Check if there's any task running for selected_model
+            active_tasks = get_active_tasks()
+            selected_model_task = None
+            for task in active_tasks:
+                if task.get('model') == selected_model and task.get('username') == current_user:
+                    selected_model_task = task
+                    break
+            if selected_model_task:
+                st.success(f"🟢 **运行中** (PID: {selected_model_task['pid']}) | 用户: {current_user}")
+            else:
+                st.info("⚪ **空闲**")
 
-        # Only show logs if the selected model is the one running
-        if st.session_state.running_model == selected_model or st.session_state.running_model is None:
+        # Get logfile for selected model (support multi-task concurrent display)
+        selected_logfile = None
+        if st.session_state.running_model == selected_model:
+            # Current session's running model
+            selected_logfile = st.session_state.run_logfile
+        else:
+            # Check from active tasks
+            active_tasks = get_active_tasks()
+            for task in active_tasks:
+                if task.get('model') == selected_model and task.get('username') == current_user:
+                    selected_logfile = task.get('logfile')
+                    break
+
+        # Show logs if logfile exists for selected model
+        if selected_logfile and os.path.exists(selected_logfile):
             st.subheader("📋 实时日志")
-                        
+
             # Auto-refresh toggle
             auto_refresh = st.checkbox("🔄 自动刷新日志", value=True, help="取消勾选以停止页面刷新（查看 TensorBoard 时很有用）")
 
-            if st.session_state.run_logfile and os.path.exists(st.session_state.run_logfile):
-                with open(st.session_state.run_logfile, "r") as f:
+            # Use selected_logfile instead of session_state.run_logfile
+            if selected_logfile and os.path.exists(selected_logfile):
+                with open(selected_logfile, "r") as f:
                     lines = f.readlines()
                     if lines:
                         st.code("".join(lines[-50:]), language="text")
@@ -3093,7 +3128,8 @@ if selected_model:
                 time.sleep(2)
                 st.rerun()
         else:
-            st.caption(f"**{st.session_state.running_model}** 的日志已隐藏。切换回该模型以查看实时日志。")
+            # Show message that no logfile is available for selected model
+            st.caption(f"**{selected_model}** 暂无运行中的任务或日志文件。")
 
 
     with tab3:
