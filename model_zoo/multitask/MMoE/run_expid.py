@@ -86,11 +86,37 @@ def _install_signal_handlers():
     def _handle(sig, frame):
         logging.warning(f"Received signal {sig}, requesting stop...")
         _stop_event.set()
+        # Clean up task state on signal
+        try:
+            cleanup_task_state()
+        except:
+            pass
     for s in (signal.SIGINT, signal.SIGTERM):
         try:
             signal.signal(s, _handle)
         except Exception:
             pass
+
+
+def cleanup_task_state(pid=None):
+    """Clean up dashboard task state file for this process."""
+    if pid is None:
+        pid = os.getpid()
+
+    # Try to find and remove task state file
+    task_state_dir = os.path.join(root_path, "dashboard", "state", "tasks")
+    if not os.path.exists(task_state_dir):
+        return
+
+    try:
+        for f in os.listdir(task_state_dir):
+            if f.endswith(".json") and f"_{pid}.json" in f:
+                fpath = os.path.join(task_state_dir, f)
+                os.remove(fpath)
+                logging.info(f"Cleaned up task state: {f}")
+                break
+    except Exception as e:
+        logging.warning(f"Failed to cleanup task state: {e}")
 
 
 def run_train(model, feature_map, params, args):
@@ -542,6 +568,12 @@ def run_inference(model, feature_map, params, args):
                 logging.info(f"Lock file removed: {lock_file}")
         except Exception as e:
             logging.warning(f"Failed to remove lock file: {e}")
+
+        # Clean up dashboard task state
+        try:
+            cleanup_task_state()
+        except Exception as e:
+            logging.warning(f"Failed to cleanup task state: {e}")
 
 
 if __name__ == '__main__':
