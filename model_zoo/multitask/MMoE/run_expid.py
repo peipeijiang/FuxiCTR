@@ -402,9 +402,43 @@ def run_inference(model, feature_map, params, args):
         )
 
         try:
+            from tqdm import tqdm
+
             is_tty = sys.stdout.isatty()
-            tqdm_disable = rank != 0 or not is_tty
-            for batch_data in tqdm(test_gen, desc=f"Inference (Rank {rank})", disable=tqdm_disable, dynamic_ncols=True):
+
+            # Setup dual progress bars
+            total_pbar = None
+            file_pbar = None
+            batch_pbar = None
+
+            if is_tty:
+                # Total progress bar (position 0)
+                total_pbar = tqdm(
+                    total=len(file_total_rows),
+                    desc=f"Rank {rank}: Total",
+                    position=0,
+                    leave=True,
+                    dynamic_ncols=True,
+                    disable=False
+                )
+
+                # Current file progress bar (position 1)
+                file_pbar = tqdm(
+                    total=100,
+                    desc=f"Rank {rank}: Current file",
+                    position=1,
+                    leave=False,
+                    dynamic_ncols=True,
+                    disable=False,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]"
+                )
+
+            # Track current file for progress update
+            current_file_id = None
+            current_file_total = 0
+            current_file_processed = 0
+
+            for batch_data in test_gen:
                 if _stop_event.is_set():
                     logging.warning(f"Rank {rank}: Stop requested, exiting inference loop")
                     break
@@ -426,45 +460,58 @@ def run_inference(model, feature_map, params, args):
                 # Prepare ID cache
                 id_cache = Inferenceutils._prepare_id_cache(ids_batch, unique_files, original_file_indices)
 
-                # Run batch via SweepInference (handles normal, multi-task, and sweep modes)
+                # Run batch via SweepInference
                 batch_success = sweep_inference.run_batch(batch_data, unique_files, id_cache, writer_wrapper)
 
                 if batch_success:
                     has_data = True
 
                 # Update progress tracking
+                files_completed_this_batch = []
                 for b_idx in file_idx_arr:
                     if isinstance(b_idx, torch.Tensor):
                         b_idx = b_idx.item()
                     file_processed_rows[b_idx] = file_processed_rows.get(b_idx, 0) + 1
 
-                # Log progress per file
-                for b_idx in file_idx_arr:
-                    if isinstance(b_idx, torch.Tensor):
-                        b_idx = b_idx.item()
-
+                    # Check if file is completed
                     total_rows = file_total_rows.get(b_idx, 0)
-                    if total_rows > 0:
-                        progress_pct = min(100, int(file_processed_rows[b_idx] * 100 / total_rows))
-                        last_pct = file_progress_logged.get(b_idx, -1)
-                        original_fid = block_idx_to_file_idx.get(b_idx, b_idx)
+                    if total_rows > 0 and file_processed_rows[b_idx] >= total_rows:
+                        if b_idx not in files_completed_this_batch:
+                            files_completed_this_batch.append(b_idx)
 
-                        if rank == 0 and is_tty:
-                            msg = f"\r[Rank {rank}] part_{original_fid} {progress_pct}% ({file_processed_rows[b_idx]}/{total_rows} rows)"
-                            pad = max(0, file_progress_line_len - len(msg))
-                            sys.stdout.write(msg + (" " * pad))
-                            sys.stdout.flush()
-                            file_progress_line_len = len(msg)
-                            file_progress_current = original_fid
-                            if progress_pct == 100 and last_pct < 100:
-                                logging.info(f"Rank {rank}: File part_{original_fid} progress {progress_pct}%")
-                                file_progress_logged[b_idx] = progress_pct
-                        else:
-                            if progress_pct >= last_pct + 10 or progress_pct == 100:
-                                logging.info(f"Rank {rank}: File part_{original_fid} progress {progress_pct}%")
-                                file_progress_logged[b_idx] = progress_pct
+                # Update progress bars
+                if is_tty and total_pbar:
+                    # Count total files completed across all ranks
+                    files_done_count = sum(1 for idx, rows in file_processed_rows.items()
+                                          if file_total_rows.get(idx, 0) > 0 and rows >= file_total_rows[idx])
+                    total_pbar.n = files_done_count
+                    total_pbar.refresh()
+
+                    # Update current file progress
+                    if len(unique_files) > 0:
+                        # Get the file being processed (first one in unique_files)
+                        current_fid = unique_files[0]
+                        if current_fid != current_file_id:
+                            current_file_id = current_fid
+                            current_file_total = file_total_rows.get(current_fid, 0)
+                            current_file_processed = 0
+
+                        current_file_processed = file_processed_rows.get(current_fid, 0)
+                        if current_file_total > 0:
+                            pct = min(100, int(current_file_processed * 100 / current_file_total))
+                            file_pbar.n = pct
+                            original_fid = block_idx_to_file_idx.get(current_fid, current_fid)
+                            file_pbar.set_description(f"Rank {rank}: part_{original_fid}")
+                            file_pbar.refresh()
 
                 del batch_data
+
+            # Close progress bars
+            if is_tty:
+                if total_pbar:
+                    total_pbar.close()
+                if file_pbar:
+                    file_pbar.close()
 
         finally:
             writer_wrapper.close()
