@@ -1972,63 +1972,82 @@ if selected_model:
                 fs_icon = "✖" if is_fullscreen else "{ }"
                 fs_help = "退出原始视图" if is_fullscreen else "切换原始 YAML 视图"
             
-            # Custom CSS for flat, modern, bold buttons in the header
+            # Custom CSS for modern, flat design buttons
             st.markdown("""
                 <style>
-                /* Target buttons inside columns for the header actions */
-                div[data-testid="column"] button {
-                    border: 1px solid transparent; /* Flat style */
-                    background-color: #f8f9fa; /* Very light gray */
-                    font-weight: 900 !important; /* Bold icons */
-                    border-radius: 8px; /* Rounded corners */
-                    transition: all 0.2s ease;
-                    padding: 0.4rem 0.8rem; /* Increased padding for better touch target and look */
-                    margin: 0px;
-                    width: 100%; /* Force button to fill the small column */
+                /* Header action buttons - modern flat design */
+                div[data-testid="stHorizontalBlock"] > div style {
+                    gap: 0.5rem !important;
                 }
-                div[data-testid="column"] button:hover {
-                    border: 1px solid #e0e0e0;
-                    background-color: #ffffff;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                    color: #000;
+
+                /* Download button */
+                div[data-testid="column"] > div > button[kind="primary"] {
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+                    border: none !important;
+                    color: white !important;
+                    font-weight: 600 !important;
+                    border-radius: 8px !important;
+                    padding: 0.5rem 1rem !important;
+                    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3) !important;
+                    transition: all 0.2s ease !important;
+                }
+                div[data-testid="column"] > div > button[kind="primary"]:hover {
+                    transform: translateY(-1px) !important;
+                    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4) !important;
+                }
+
+                /* Secondary action buttons */
+                div[data-testid="column"] > div > button:not([kind="primary"]) {
+                    background-color: #f8f9fa !important;
+                    border: 1px solid #e9ecef !important;
+                    color: #495057 !important;
+                    font-weight: 600 !important;
+                    border-radius: 8px !important;
+                    padding: 0.5rem 1rem !important;
+                    transition: all 0.2s ease !important;
+                    min-width: 40px !important;
+                }
+                div[data-testid="column"] > div > button:not([kind="primary"]):hover {
+                    background-color: #e9ecef !important;
+                    border-color: #dee2e6 !important;
+                    transform: translateY(-1px) !important;
                 }
                 </style>
             """, unsafe_allow_html=True)
 
             # Dynamic column ratios based on fullscreen state
-            # Fullscreen: Container is wide, use small ratios for buttons to keep them compact
-            # Normal: Container is narrow, give buttons more relative width to prevent squashing
             if is_fullscreen:
-                col_ratios = [1, 0.04, 0.04, 0.04]
+                col_ratios = [1, 0.08, 0.08, 0.08]
             else:
-                col_ratios = [1, 0.12, 0.12, 0.12]
-                
-            header_cols = st.columns(col_ratios, gap="small", vertical_alignment="bottom")
-            
+                col_ratios = [1, 0.15, 0.15, 0.15]
+
+            header_cols = st.columns(col_ratios, gap="small", vertical_alignment="center")
+
             with header_cols[0]:
-                st.markdown(f"### **{title}**") # Bold title
-            
+                st.markdown(f"### **{title}**")
+
             with header_cols[1]:
                 st.download_button(
-                    label="📥",
+                    label="↓",
                     data=content,
                     file_name=title,
                     mime=download_mime,
                     key=f"dl_{key_suffix}_{selected_model}",
-                    help="导出文件"
+                    help="导出文件",
+                    use_container_width=True
                 )
-                
+
             with header_cols[2]:
                 if is_custom:
-                    if st.button("↺", key=f"reset_{key_suffix}_{selected_model}", help="重置为系统默认"):
+                    if st.button("↻", key=f"reset_{key_suffix}_{selected_model}", help="重置为系统默认", use_container_width=True):
                         reset_func(current_user, selected_model, title)
                         _clear_buffer(buffer_key)
                         st.rerun()
                 else:
-                    st.write("") # Placeholder
-            
+                    st.write("")
+
             with header_cols[3]:
-                if st.button(fs_icon, key=f"fs_btn_{key_suffix}", help=fs_help):
+                if st.button(fs_icon, key=f"fs_btn_{key_suffix}", help=fs_help, use_container_width=True):
                     if is_fullscreen:
                         st.session_state.fullscreen_section = None
                     else:
