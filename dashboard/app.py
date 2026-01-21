@@ -1003,7 +1003,7 @@ def _render_label_col_section(entry, editor_key, selected_name):
     final_items = [item for i, item in enumerate(new_items) if i not in deleted_indices]
 
     # 添加按钮
-    if st.button("➕ 添加任务 (Add Label)", key=f"{editor_key}_{selected_name}_label_add"):
+    if st.button("➕ 添加任务", key=f"{editor_key}_{selected_name}_label_add", help="添加新任务/标签"):
         final_items.append(OrderedDict({"name": "new_label", "dtype": "float"}))
     
     # 更新 entry
@@ -1539,11 +1539,11 @@ def _render_loss_section(label, value, widget_key):
         new_items.append(new_item)
 
     # 底部添加按钮栏
-    add_cols = st.columns([0.2, 0.25, 0.55])
-    if add_cols[0].button("✚ BCE", key=f"{widget_key}_add_bce", help="添加 binary_crossentropy"):
+    add_cols = st.columns([0.3, 0.35, 0.35])
+    if add_cols[0].button("✚ BCE", key=f"{widget_key}_add_bce", help="添加 binary_crossentropy", use_container_width=True):
         new_items.append("binary_crossentropy")
         st.rerun()
-    if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss"):
+    if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss", use_container_width=True):
         new_items.append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
         st.rerun()
     
@@ -2006,11 +2006,17 @@ if selected_model:
                     padding: 0.5rem 1rem !important;
                     transition: all 0.2s ease !important;
                     min-width: 40px !important;
+                    cursor: pointer !important;
                 }
                 div[data-testid="column"] > div > button:not([kind="primary"]):hover {
                     background-color: #e9ecef !important;
                     border-color: #dee2e6 !important;
                     transform: translateY(-1px) !important;
+                }
+
+                /* 所有按钮提高点击响应速度 */
+                button {
+                    touch-action: manipulation !important;
                 }
                 </style>
             """, unsafe_allow_html=True)
