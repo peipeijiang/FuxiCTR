@@ -47,17 +47,40 @@ class Inferenceutils:
         return expanded, base_length or 0
 
     @staticmethod
-    def _get_preds_dict(return_dict, labels):
-        """Normalize model outputs to a dict of column -> numpy array."""
+    def _get_preds_dict(return_dict, labels, model=None):
+        """Normalize model outputs to a dict of column -> numpy array.
+
+        Args:
+            return_dict: Model forward() output dictionary
+            labels: Label names from feature_map
+            model: Optional model instance for checking task types (binary_classification_logits)
+        """
+        # Single-task model
         if "y_pred" in return_dict:
-            return {"pred": return_dict["y_pred"].data.cpu().numpy().reshape(-1)}
+            pred = return_dict["y_pred"]
+            # Apply sigmoid for binary_classification_logits task type
+            if model and hasattr(model, 'task_list'):
+                if model.task_list[0] == "binary_classification_logits":
+                    pred = torch.sigmoid(pred)
+            return {"pred": pred.data.cpu().numpy().reshape(-1)}
+
+        # Multi-task model
         preds = {}
-        for label in labels:
+        for i, label in enumerate(labels):
             key = f"{label}_pred"
             if key in return_dict:
-                preds[key] = return_dict[key].data.cpu().numpy().reshape(-1)
-        if not preds and "pred" in return_dict: # fallback
-             preds["pred"] = return_dict["pred"].data.cpu().numpy().reshape(-1)
+                pred = return_dict[key]
+                # Apply sigmoid for binary_classification_logits task type
+                # to ensure output is in (0, 1) range
+                if model and hasattr(model, 'task_list') and i < len(model.task_list):
+                    if model.task_list[i] == "binary_classification_logits":
+                        pred = torch.sigmoid(pred)
+                preds[key] = pred.data.cpu().numpy().reshape(-1)
+
+        # Fallback
+        if not preds and "pred" in return_dict:
+            preds["pred"] = return_dict["pred"].data.cpu().numpy().reshape(-1)
+
         if not preds:
             raise KeyError("No prediction keys found in model output.")
         return preds
@@ -174,7 +197,11 @@ class SweepInference:
         # If sweep is disabled, just run normal inference
         if not self.sweep_enabled:
             with torch.no_grad():
-                pred_dict = Inferenceutils._get_preds_dict(self.model.forward(batch_data), self.feature_map.labels)
+                pred_dict = Inferenceutils._get_preds_dict(
+                    self.model.forward(batch_data),
+                    self.feature_map.labels,
+                    model=self.model
+                )
             for fid in unique_files:
                 writer.write_chunk(fid, id_cache[fid], pred_dict)
             return True
@@ -200,7 +227,11 @@ class SweepInference:
                 sweep_tensor[start_idx:end_idx] = d_idx
                 
             with torch.no_grad():
-                pred_dict = Inferenceutils._get_preds_dict(self.model.forward(expanded_batch), self.feature_map.labels)
+                pred_dict = Inferenceutils._get_preds_dict(
+                    self.model.forward(expanded_batch),
+                    self.feature_map.labels,
+                    model=self.model
+                )
             
             # Slice back and write
             for idx, d_idx in enumerate(dom_chunk):
