@@ -55,7 +55,21 @@ def get_optimizer(optimizer, params, lr):
         raise NotImplementedError("optimizer={} is not supported.".format(optimizer))
     return optimizer
 
-def get_loss(loss):
+def get_loss(loss, task="binary_classification"):
+    """
+    Get loss function with automatic focal_loss adaptation.
+
+    Args:
+        loss: Loss name or dict with name and params
+        task: Task type (e.g., 'binary_classification', 'binary_classification_logits')
+
+    Returns:
+        Callable loss function
+
+    Note:
+        For focal_loss: always uses from_logits=True (numerically stable)
+        The task type only affects model output layer, not the loss function.
+    """
     params = {}
     # Allow passing a single loss wrapped in a list (common in configs)
     if isinstance(loss, (list, tuple)):
@@ -70,13 +84,27 @@ def get_loss(loss):
     if isinstance(loss, str):
         if loss in ["bce", "binary_crossentropy", "binary_cross_entropy"]:
             loss = "binary_cross_entropy"
+
+    # Special handling for focal_loss: always use from_logits=True for numerical stability
+    if isinstance(loss, str) and loss.lower() == "focalloss":
+        loss = "FocalLoss"
+
+    if isinstance(loss, str) and loss == "FocalLoss":
+        # focal_loss always uses from_logits=True (numerically stable)
+        # But allow explicit override via params if user really wants to
+        if "from_logits" not in params:
+            params["from_logits"] = True
+        # Log for user awareness
+        import logging
+        logging.info(f"FocalLoss: from_logits=True (numerically stable, model output should be logits)")
+
     try:
         loss_fn = getattr(torch.functional.F, loss)
     except Exception:
         try:
             loss_fn = eval("losses." + str(loss))
         except Exception:
-            raise NotImplementedError("loss={} is not supported.".format(loss))      
+            raise NotImplementedError("loss={} is not supported.".format(loss))
     if params:
         return partial(loss_fn, **params)
     return loss_fn

@@ -179,11 +179,11 @@ class MultiTaskModel(BaseModel):
             self._log('Added GradNorm parameters to optimizer (weight_decay=0)')
         
         self.optimizer = get_optimizer(optimizer, params_list, lr)
-        
+
         if isinstance(loss, list):
-            self.loss_fn = [get_loss(l) for l in loss]
+            self.loss_fn = [get_loss(l, task=t) for l, t in zip(loss, self.task_list)]
         else:
-            self.loss_fn = [get_loss(loss) for _ in range(self.num_tasks)]
+            self.loss_fn = [get_loss(loss, task=t) for t in self.task_list]
 
     def get_labels(self, inputs):
         """ Override get_labels() to use multiple labels """

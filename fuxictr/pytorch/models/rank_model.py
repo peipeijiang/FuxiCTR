@@ -111,7 +111,7 @@ class BaseModel(nn.Module):
 
     def compile(self, optimizer, loss, lr):
         self.optimizer = get_optimizer(optimizer, self.parameters(), lr)
-        self.loss_fn = get_loss(loss)
+        self.loss_fn = get_loss(loss, task=self.task)
 
     def regularization_loss(self):
         reg_term = 0
