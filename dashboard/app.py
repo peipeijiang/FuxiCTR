@@ -2421,14 +2421,16 @@ if selected_model:
             except Exception as e:
                 logging.warning(f"清理进程树时出错: {e}")
 
-        def _kill_torchrun_processes(username):
+        def _kill_torchrun_processes(username, model_name=None):
             """
             清理 torchrun 分布式训练进程
-            注意：在单用户系统模拟多用户场景下，username (逻辑用户) 可能与 OS 用户不一致。
-            为了能停止进程，我们这里使用当前 OS 用户进行清理，但会尽量只清理相关的 python/torchrun 进程。
+
+            Args:
+                username: 逻辑用户名（dashboard 用户）
+                model_name: 可选，指定模型名称，只停止该模型的进程
             """
             system_user = _get_os_user()
-            
+
             # 1. 清理 torchrun 主进程及进程组
             try:
                 result = subprocess.run(
@@ -2443,6 +2445,14 @@ if selected_model:
                         try:
                             torchrun_proc = psutil.Process(int(torchrun_pid))
                             if torchrun_proc.username() == system_user:
+                                # 如果指定了 model_name，检查进程命令行是否包含该模型路径
+                                if model_name:
+                                    cmdline = " ".join(torchrun_proc.cmdline())
+                                    # 检查是否包含模型路径
+                                    if model_name not in cmdline:
+                                        logging.debug(f"跳过 torchrun 进程 {torchrun_pid}，不属于模型 {model_name}")
+                                        continue
+
                                 subprocess.run(
                                     ["kill", "-9", torchrun_pid],
                                     stderr=subprocess.DEVNULL,
@@ -2471,7 +2481,13 @@ if selected_model:
                                 cmdline = " ".join(proc.cmdline())
                                 if "dashboard/app.py" in cmdline or "streamlit" in cmdline:
                                     continue
-                                    
+
+                                # 如果指定了 model_name，检查进程命令行是否包含该模型路径
+                                if model_name:
+                                    if model_name not in cmdline:
+                                        logging.debug(f"跳过进程 {proc_pid}，不属于模型 {model_name}")
+                                        continue
+
                                 subprocess.run(
                                     ["kill", "-9", proc_pid],
                                     stderr=subprocess.DEVNULL,
@@ -2602,6 +2618,7 @@ if selected_model:
                 try:
                     pid = st.session_state.run_pid
                     username = current_user
+                    model_name = st.session_state.running_model
 
                     # 1. 验证进程归属
                     if not _verify_process_ownership(pid, username):
@@ -2646,8 +2663,8 @@ if selected_model:
                     # 4. 清理进程树
                     _kill_process_tree(pid, username)
 
-                    # 5. 清理 torchrun 分布式进程
-                    _kill_torchrun_processes(username)
+                    # 5. 清理 torchrun 分布式进程（只清理当前模型的进程）
+                    _kill_torchrun_processes(username, model_name)
 
                     # 6. 清理锁文件
                     _cleanup_lock_files(username, ROOT_DIR)
@@ -2660,12 +2677,12 @@ if selected_model:
 
                 except Exception as e:
                     logging.warning(f"停止进程时出错: {e}")
-                
+
                 update_history_record(current_user, st.session_state.run_pid, "stopped")
-                
+
                 # Unregister Task Globally
                 remove_task_state(st.session_state.run_pid)
-                
+
                 st.session_state.run_pid = None
                 st.session_state.running_model = None
 
