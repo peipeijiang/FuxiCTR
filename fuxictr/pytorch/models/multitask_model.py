@@ -176,18 +176,18 @@ class MultiTaskModel(BaseModel):
         if self.awl is not None:
             special_params.update(id(p) for p in self.awl.parameters())
         if self.gradnorm is not None:
+            # GradNorm parameters are updated by its own optimizer, not main optimizer
             special_params.update(id(p) for p in self.gradnorm.parameters())
 
         params_list = [{'params': [p for p in self.parameters() if id(p) not in special_params]}]
-        
-        # Add AWL/GradNorm parameters with no weight decay
+
+        # Add AWL parameters with no weight decay (GradNorm uses separate optimizer)
         if self.awl is not None:
             params_list.append({'params': self.awl.parameters(), 'weight_decay': 0})
             self._log('Added Uncertainty Weighting parameters to optimizer (weight_decay=0)')
-        elif self.gradnorm is not None:
-            params_list.append({'params': self.gradnorm.parameters(), 'weight_decay': 0})
-            self._log('Added GradNorm parameters to optimizer (weight_decay=0)')
-        
+        if self.gradnorm is not None:
+            self._log('GradNorm parameters use separate optimizer (excluded from main optimizer)')
+
         self.optimizer = get_optimizer(optimizer, params_list, lr)
 
         if isinstance(loss, list):
