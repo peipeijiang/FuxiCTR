@@ -272,6 +272,10 @@ class MultiTaskModel(BaseModel):
         
         # Get individual task losses
         loss_list = self.add_loss(return_dict, y_true)
+        # Clone losses to avoid computation graph conflicts
+        # We need two copies: one for GradNorm gradient computation,
+        # and one for final parameter update
+        loss_list_for_gradnorm = [loss.clone() for loss in loss_list]
         
         # Store initial losses in the first iteration
         if not self.gradnorm.has_initial_losses:
@@ -296,11 +300,12 @@ class MultiTaskModel(BaseModel):
         last_shared_layer = self._get_last_shared_layer()
 
         if last_shared_layer is not None and self._epoch_index >= 1:
-            # Compute gradients for each task
+            # Compute gradients for each task using cloned losses
+            # This avoids interfering with the final total_loss backward pass
             task_gradients = []
-            for i, loss in enumerate(loss_list):
+            for i, loss in enumerate(loss_list_for_gradnorm):
                 # Retain graph for all but the last task
-                retain = (i < len(loss_list) - 1)
+                retain = (i < len(loss_list_for_gradnorm) - 1)
                 if last_shared_layer.weight.grad is not None:
                     last_shared_layer.weight.grad.zero_()
                 
@@ -317,8 +322,9 @@ class MultiTaskModel(BaseModel):
             # Stack gradients: [num_tasks, ...]
             if len(task_gradients) > 0:
                 # Compute gradient norms for each task
+                # Detach loss_weights to avoid creating a new computation graph
                 grad_norms = torch.stack([
-                    torch.norm(loss_weights[i] * grad, p=2) 
+                    torch.norm(loss_weights[i].detach() * grad, p=2)
                     for i, grad in enumerate(task_gradients)
                 ])
                 
