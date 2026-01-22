@@ -930,8 +930,14 @@ def _render_fallback_editor(content, *, editor_key, lang, lines):
 
 def _render_label_col_section(entry, editor_key, selected_name):
     """可视化编辑 label_col，支持单目标(dict)和多目标(list)及新增"""
+
+    # Session state key for pending deletions
+    pending_del_key = f"{editor_key}_{selected_name}_pending_deletions"
+    if pending_del_key not in st.session_state:
+        st.session_state[pending_del_key] = []
+
     label_col = entry.get("label_col")
-    
+
     # 策略：如果是 dict，视为 items=[dict]；如果是 list，视为 items=list
     # 保存时：如果原先是 dict 且 count=1，存回 dict；否则存 list
     is_single_structure = isinstance(label_col, dict)
@@ -940,7 +946,7 @@ def _render_label_col_section(entry, editor_key, selected_name):
         items = [label_col]
     elif isinstance(label_col, list):
         items = list(label_col)
-    
+
     # 扫描所有 keys
     all_keys = ["name", "dtype"]
     for item in items:
@@ -948,11 +954,11 @@ def _render_label_col_section(entry, editor_key, selected_name):
             for k in item.keys():
                 if k not in all_keys:
                     all_keys.append(k)
-    
+
     st.markdown("##### label_col")
 
     new_items = []
-    deleted_indices = []
+    deleted_indices = st.session_state[pending_del_key].copy()  # 从session state初始化
     
     # 渲染列表
     for idx, item in enumerate(items):
@@ -995,7 +1001,8 @@ def _render_label_col_section(entry, editor_key, selected_name):
                 <div class='del_marker' style='display:none'></div>
                 """, unsafe_allow_html=True)
             if st.button("✕", key=f"{editor_key}_{selected_name}_label_del_{idx}", help="删除此任务"):
-                deleted_indices.append(idx)
+                st.session_state[pending_del_key].append(idx)
+                st.rerun()
         
         new_items.append(updated_item)
     
@@ -1005,6 +1012,7 @@ def _render_label_col_section(entry, editor_key, selected_name):
     # 添加按钮
     if st.button("➕ 添加任务", key=f"{editor_key}_{selected_name}_label_add", help="添加新任务/标签"):
         final_items.append(OrderedDict({"name": "new_label", "dtype": "float"}))
+        st.rerun()
     
     # 更新 entry
     if not final_items:
@@ -1014,6 +1022,9 @@ def _render_label_col_section(entry, editor_key, selected_name):
          entry["label_col"] = final_items[0]
     else:
          entry["label_col"] = final_items
+
+    # 清空 pending deletions
+    st.session_state[pending_del_key] = []
 
 
 def render_dataset_config_body(
@@ -1209,6 +1220,7 @@ def render_dataset_config_body(
             st.toast(f"已复制为 {tgt_id}（记得保存）", icon="✅")
             st.session_state[copy_mode_key] = False
             st.session_state[copy_clear_key] = True
+            st.rerun()
 
     sel_cols = st.columns([0.94, 0.06], vertical_alignment="bottom")
     with sel_cols[0]:
@@ -1237,6 +1249,7 @@ def render_dataset_config_body(
             """, unsafe_allow_html=True)
         if st.button("✚", key=f"{select_key}_copy_btn", help="克隆当前数据集配置为新名称", type="secondary"):
             st.session_state[copy_mode_key] = True
+            st.rerun()
 
     new_ds_name = st.session_state.get(copy_input_key, "")
     if st.session_state[copy_mode_key]:
@@ -1248,11 +1261,13 @@ def render_dataset_config_body(
                 st.session_state[copy_action_key] = True
 
             with btn_cols[0]:
-                st.button("确定复制", key=f"{select_key}_confirm_copy", on_click=_on_confirm_copy)
+                if st.button("确定复制", key=f"{select_key}_confirm_copy", on_click=_on_confirm_copy):
+                    st.rerun()
             with btn_cols[1]:
                 if st.button("取消", key=f"{select_key}_cancel_copy"):
                     st.session_state[copy_mode_key] = False
                     st.session_state[copy_clear_key] = True
+                    st.rerun()
 
     if not selected_name:
         return content
@@ -1308,6 +1323,7 @@ def render_dataset_config_body(
                                     updated_data[selected_name] = entry
                                     _set_buffered_content(buffer_key, _yaml_dump(updated_data))
                                 st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
+                                st.rerun()
                 elif field == "train_data":
                     td_val = "" if entry.get(field) is None else str(entry.get(field))
                     entry[field] = st.text_input(field, td_val, key=widget_key, placeholder="train_data parquet 路径")
@@ -1320,6 +1336,7 @@ def render_dataset_config_body(
                                 updated_data[selected_name] = entry
                                 _set_buffered_content(buffer_key, _yaml_dump(updated_data))
                             st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
+                            st.rerun()
                 else:
                     entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
 
@@ -1456,7 +1473,15 @@ def render_dataset_config_body(
 
 def _render_loss_section(label, value, widget_key):
     """可视化的 Loss 编辑器，兼容混合类型（String/Dict）和多任务"""
-    
+
+    # Session state keys for pending additions and deletions
+    pending_add_key = f"{widget_key}_pending_add"
+    pending_del_key = f"{widget_key}_pending_del"
+    if pending_add_key not in st.session_state:
+        st.session_state[pending_add_key] = []
+    if pending_del_key not in st.session_state:
+        st.session_state[pending_del_key] = []
+
     # 1. 统一正规化为 List 进行编辑
     # is_single_structure 标记最初是否是非列表形式（String 或 单Dict），
     # 用于在保存时如果只有一项，尽可能还原回简洁形式。
@@ -1482,6 +1507,12 @@ def _render_loss_section(label, value, widget_key):
         # 其他情况回退
         return _render_yaml_field(label, value, widget_key)
 
+    # 合并 pending additions 到 items 中
+    pending_items = st.session_state[pending_add_key]
+    if pending_items:
+        items.extend(pending_items)
+        st.session_state[pending_add_key] = []  # 清空 pending 项
+
     st.markdown(f"##### {label}")
 
     new_items = []
@@ -1492,7 +1523,14 @@ def _render_loss_section(label, value, widget_key):
     cols_header[1].caption("Params (YAML/JSON)")
     # cols_header[2].caption("Del")
 
+    # 获取 pending deletions
+    pending_deletions = st.session_state[pending_del_key]
+
     for idx, item in enumerate(items):
+        # 跳过待删除项
+        if idx in pending_deletions:
+            continue
+
         cols = st.columns([0.3, 0.6, 0.1], vertical_alignment="center")
         
         # 解析当前项：支持 String 或 Dict 混合
@@ -1515,7 +1553,8 @@ def _render_loss_section(label, value, widget_key):
         
         # Delete button
         if cols[2].button("✕", key=f"{widget_key}_{idx}_del"):
-            continue # Skip adding
+            st.session_state[pending_del_key].append(idx)
+            st.rerun()
             
         # Reconstruct item
         parsed_params = None
@@ -1541,10 +1580,10 @@ def _render_loss_section(label, value, widget_key):
     # 底部添加按钮栏
     add_cols = st.columns([0.3, 0.35, 0.35])
     if add_cols[0].button("✚ BCE", key=f"{widget_key}_add_bce", help="添加 binary_crossentropy", use_container_width=True):
-        new_items.append("binary_crossentropy")
+        st.session_state[pending_add_key].append("binary_crossentropy")
         st.rerun()
     if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss", use_container_width=True):
-        new_items.append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
+        st.session_state[pending_add_key].append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
         st.rerun()
     
     # 还原结构逻辑
@@ -1552,10 +1591,16 @@ def _render_loss_section(label, value, widget_key):
         # 如果原本是单项，且现在还是 1 项 -> 还原为单项（String 或 Dict）
         # 这样保持配置文件的简洁性
         if len(new_items) == 1:
+            # 清空 pending deletions
+            st.session_state[pending_del_key] = []
             return new_items[0]
         elif len(new_items) == 0:
+            # 清空 pending deletions
+            st.session_state[pending_del_key] = []
             return None
-    
+
+    # 清空 pending deletions
+    st.session_state[pending_del_key] = []
     return new_items
 
 
@@ -1631,6 +1676,7 @@ def render_model_config_body(
             st.toast(f"已复制为 {tgt_id}（记得保存）", icon="✅")
             st.session_state[copy_mode_key] = False
             st.session_state[copy_clear_key] = True
+            st.rerun()
 
     sel_cols = st.columns([0.94, 0.06], vertical_alignment="bottom")
     with sel_cols[0]:
@@ -1660,6 +1706,7 @@ def render_model_config_body(
             """, unsafe_allow_html=True)
         if st.button("✚", key=f"{select_key}_copy_btn", help="克隆当前模型配置为新名称", type="secondary"):
             st.session_state[copy_mode_key] = True
+            st.rerun()
 
     new_model_name = st.session_state.get(copy_input_key, "")
     if st.session_state[copy_mode_key]:
@@ -1671,11 +1718,13 @@ def render_model_config_body(
                 st.session_state[copy_action_key] = True
 
             with btn_cols[0]:
-                st.button("确定复制", key=f"{select_key}_confirm_copy", on_click=_on_confirm_copy_model)
+                if st.button("确定复制", key=f"{select_key}_confirm_copy", on_click=_on_confirm_copy_model):
+                    st.rerun()
             with btn_cols[1]:
                 if st.button("取消", key=f"{select_key}_cancel_copy"):
                     st.session_state[copy_mode_key] = False
                     st.session_state[copy_clear_key] = True
+                    st.rerun()
 
     if not selected_name:
         return content
