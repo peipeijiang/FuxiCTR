@@ -54,6 +54,11 @@ class Inferenceutils:
             return_dict: Model forward() output dictionary
             labels: Label names from feature_map
             model: Optional model instance for checking task types (binary_classification_logits)
+
+        Note:
+            Supports both key formats:
+            - f"{label}_pred" (e.g., "click_pred", "conversion_pred")
+            - f"{label}" (e.g., "click", "conversion")
         """
         # Single-task model
         if "y_pred" in return_dict:
@@ -67,22 +72,33 @@ class Inferenceutils:
         # Multi-task model
         preds = {}
         for i, label in enumerate(labels):
-            key = f"{label}_pred"
-            if key in return_dict:
-                pred = return_dict[key]
-                # Apply sigmoid for binary_classification_logits task type
-                # to ensure output is in (0, 1) range
-                if model and hasattr(model, 'task_list') and i < len(model.task_list):
-                    if model.task_list[i] == "binary_classification_logits":
-                        pred = torch.sigmoid(pred)
-                preds[key] = pred.data.cpu().numpy().reshape(-1)
+            # Try both key formats: "{label}_pred" and "{label}"
+            key_pred = f"{label}_pred"
+            key_label = label
+
+            # Prefer "{label}_pred" format, fallback to "{label}"
+            if key_pred in return_dict:
+                pred = return_dict[key_pred]
+                output_key = key_pred
+            elif key_label in return_dict:
+                pred = return_dict[key_label]
+                output_key = key_label
+            else:
+                continue
+
+            # Apply sigmoid for binary_classification_logits task type
+            # to ensure output is in (0, 1) range
+            if model and hasattr(model, 'task_list') and i < len(model.task_list):
+                if model.task_list[i] == "binary_classification_logits":
+                    pred = torch.sigmoid(pred)
+            preds[output_key] = pred.data.cpu().numpy().reshape(-1)
 
         # Fallback
         if not preds and "pred" in return_dict:
             preds["pred"] = return_dict["pred"].data.cpu().numpy().reshape(-1)
 
         if not preds:
-            raise KeyError("No prediction keys found in model output.")
+            raise KeyError(f"No prediction keys found in model output. Available keys: {list(return_dict.keys())}")
         return preds
 
 
