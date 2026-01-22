@@ -294,8 +294,8 @@ class MultiTaskModel(BaseModel):
         # Get the last shared layer for gradient computation
         # We need to identify a shared representation layer
         last_shared_layer = self._get_last_shared_layer()
-        
-        if last_shared_layer is not None and self._current_epoch >= 1:
+
+        if last_shared_layer is not None and self._epoch_index >= 1:
             # Compute gradients for each task
             task_gradients = []
             for i, loss in enumerate(loss_list):
