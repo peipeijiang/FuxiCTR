@@ -22,6 +22,7 @@ import os
 import numpy as np
 from collections import OrderedDict
 from .pretrained_embedding import PretrainedEmbedding
+from .hash_embedding import HashEmbedding
 from fuxictr.pytorch.torch_utils import get_initializer
 from fuxictr.utils import not_in_whitelist
 from fuxictr.pytorch import layers
@@ -94,7 +95,7 @@ class FeatureEmbeddingDict(nn.Module):
                     if use_pretrain and "pretrained_emb" in feature_spec:
                         pretrain_path = os.path.join(feature_map.data_dir,
                                                      feature_spec["pretrained_emb"])
-                        vocab_path = os.path.join(feature_map.data_dir, 
+                        vocab_path = os.path.join(feature_map.data_dir,
                                                   "feature_vocab.json")
                         pretrain_dim = feature_spec.get("pretrain_dim", feat_dim)
                         pretrain_usage = feature_spec.get("pretrain_usage", "init")
@@ -107,10 +108,28 @@ class FeatureEmbeddingDict(nn.Module):
                                                                              pretrain_usage,
                                                                              embedding_initializer)
                     else:
-                        padding_idx = feature_spec.get("padding_idx", None)
-                        self.embedding_layers[feature] = nn.Embedding(feature_spec["vocab_size"],
-                                                                      feat_dim, 
-                                                                      padding_idx=padding_idx)
+                        # Check for embedding_type parameter ("hash" or "lookup"/default)
+                        embedding_type = feature_spec.get("embedding_type", "lookup")
+                        if embedding_type == "hash":
+                            # Use hash embedding - no preprocessing needed
+                            num_buckets = feature_spec.get("num_buckets", feature_spec.get("vocab_size", 100000))
+                            hash_function = feature_spec.get("hash_function", "uniform")
+                            padding_idx = feature_spec.get("padding_idx", None)
+                            num_hashes = feature_spec.get("num_hashes", 1)
+
+                            # Single hash embedding (standard)
+                            self.embedding_layers[feature] = HashEmbedding(
+                                num_buckets=num_buckets,
+                                embedding_dim=feat_dim,
+                                hash_function=hash_function,
+                                padding_idx=padding_idx
+                            )
+                        else:
+                            # Default: use lookup embedding (nn.Embedding)
+                            padding_idx = feature_spec.get("padding_idx", None)
+                            self.embedding_layers[feature] = nn.Embedding(feature_spec["vocab_size"],
+                                                                          feat_dim,
+                                                                          padding_idx=padding_idx)
                 elif feature_spec["type"] == "embedding":
                     self.embedding_layers[feature] = nn.Identity()
         self.init_weights()
@@ -134,6 +153,12 @@ class FeatureEmbeddingDict(nn.Module):
                 continue
             if type(v) == PretrainedEmbedding: # skip pretrained
                 v.init_weights()
+            elif type(v) == HashEmbedding:
+                # Initialize HashEmbedding's internal embedding table
+                if v.embedding.padding_idx is not None:
+                    self.embedding_initializer(v.embedding.weight[1:, :])
+                else:
+                    self.embedding_initializer(v.embedding.weight)
             elif type(v) == nn.Embedding:
                 if v.padding_idx is not None:
                     self.embedding_initializer(v.weight[1:, :]) # set padding_idx to zero
