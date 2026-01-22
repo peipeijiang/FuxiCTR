@@ -57,29 +57,39 @@ class AutomaticWeightedLoss(nn.Module):
 
 class GradNorm(nn.Module):
     """Gradient Normalization for adaptive loss balancing in multi-task learning.
-    
+
     Reference: "GradNorm: Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks"
     (ICML 2018) http://proceedings.mlr.press/v80/chen18a/chen18a.pdf
-    
+
     Args:
         num_tasks: int, number of tasks
         alpha: float, the strength of the restoring force (default=1.5)
-        
+        lr: float, learning rate for loss weight optimizer (default=0.01)
+
     The method dynamically adjusts task weights by:
     1. Computing gradient norms for each task
     2. Balancing gradients based on relative training rates
     3. Using an asymmetry parameter alpha to control adaptation speed
     """
-    def __init__(self, num_tasks=2, alpha=1.5):
+    def __init__(self, num_tasks=2, alpha=1.5, lr=0.01):
         super(GradNorm, self).__init__()
         self.num_tasks = num_tasks
         self.alpha = alpha
+        self.lr = lr
         # Initialize loss scale parameters
         self.loss_scale = nn.Parameter(torch.ones(num_tasks, requires_grad=True))
         # Buffer to store initial losses for computing relative training rates
         self.register_buffer('initial_losses', torch.zeros(num_tasks))
         self.register_buffer('has_initial_losses', torch.tensor(False))
-        
+        self._optimizer = None  # Lazy initialization
+
+    def get_optimizer(self):
+        """Get or create the optimizer for loss_scale parameters."""
+        if self._optimizer is None:
+            device = self.loss_scale.device
+            self._optimizer = torch.optim.Adam([self.loss_scale], lr=self.lr)
+        return self._optimizer
+
     def get_loss_weights(self):
         """Get current loss weights (normalized)."""
         return F.softmax(self.loss_scale, dim=-1) * self.num_tasks
@@ -338,8 +348,8 @@ class MultiTaskModel(BaseModel):
                 gradnorm_loss = torch.abs(grad_norms - target_grad_norms.detach()).sum()
 
                 # Backward pass for GradNorm to update loss_weights
-                # Only update gradnorm parameters (loss_scale), not model params
-                gradnorm_optimizer = torch.optim.Adam([self.gradnorm.loss_scale], lr=0.01)
+                # Use cached optimizer to preserve momentum state across iterations
+                gradnorm_optimizer = self.gradnorm.get_optimizer()
                 gradnorm_optimizer.zero_grad()
                 gradnorm_loss.backward()
                 gradnorm_optimizer.step()
