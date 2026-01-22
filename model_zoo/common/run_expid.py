@@ -710,3 +710,11 @@ if __name__ == '__main__':
     if distributed and dist.is_initialized():
         distributed_barrier()
         dist.destroy_process_group()
+
+    # Clean up task state file on successful completion
+    if rank == 0:
+        try:
+            cleanup_task_state()
+            cleanup_pytorch_tmp_files()
+        except Exception as e:
+            logging.warning(f"Failed to cleanup on completion: {e}")
