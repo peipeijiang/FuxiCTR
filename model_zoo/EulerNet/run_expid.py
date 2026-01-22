@@ -89,6 +89,7 @@ def _install_signal_handlers():
         # Clean up task state on signal
         try:
             cleanup_task_state()
+            cleanup_pytorch_tmp_files()
         except:
             pass
     for s in (signal.SIGINT, signal.SIGTERM):
@@ -117,6 +118,34 @@ def cleanup_task_state(pid=None):
                 break
     except Exception as e:
         logging.warning(f"Failed to cleanup task state: {e}")
+
+
+def cleanup_pytorch_tmp_files():
+    """Clean up PyTorch DDP/RPC temporary files."""
+    import glob
+    try:
+        # Find tmp directories in model directory
+        pattern = os.path.join(root_path, "model_zoo", "**", "tmp*", "_remote_module_non_scriptable.py")
+        matching_files = glob.glob(pattern, recursive=True)
+
+        for tmp_file in matching_files:
+            try:
+                # Remove the file and its parent tmp directory
+                tmp_dir = os.path.dirname(tmp_file)
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+                if os.path.exists(tmp_dir) and tmp_dir.startswith(os.path.join(root_path, "model_zoo")):
+                    # Only remove if it's empty or only contains the remote_module file
+                    try:
+                        os.rmdir(tmp_dir)
+                        logging.info(f"Cleaned up PyTorch tmp dir: {tmp_dir}")
+                    except OSError:
+                        # Directory not empty, just remove the file
+                        logging.info(f"Cleaned up PyTorch tmp file: {tmp_file}")
+            except Exception as e:
+                logging.warning(f"Failed to cleanup {tmp_file}: {e}")
+    except Exception as e:
+        logging.warning(f"Failed to cleanup PyTorch tmp files: {e}")
 
 
 def run_train(model, feature_map, params, args):
@@ -574,6 +603,12 @@ def run_inference(model, feature_map, params, args):
             cleanup_task_state()
         except Exception as e:
             logging.warning(f"Failed to cleanup task state: {e}")
+
+        # Clean up PyTorch temporary files
+        try:
+            cleanup_pytorch_tmp_files()
+        except Exception as e:
+            logging.warning(f"Failed to cleanup PyTorch tmp files: {e}")
 
 
 if __name__ == '__main__':
