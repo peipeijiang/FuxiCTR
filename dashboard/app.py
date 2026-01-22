@@ -928,8 +928,9 @@ def _render_fallback_editor(content, *, editor_key, lang, lines):
     return content
 
 
-def _render_label_col_section(entry, editor_key, selected_name):
+def _render_label_col_section(entry, editor_key, selected_name, data=None, buffer_key=None):
     """可视化编辑 label_col，支持单目标(dict)和多目标(list)及新增"""
+    # data 参数是可选的，用于保存到 buffer
 
     # Session state key for pending deletions
     pending_del_key = f"{editor_key}_{selected_name}_pending_deletions"
@@ -1002,6 +1003,25 @@ def _render_label_col_section(entry, editor_key, selected_name):
                 """, unsafe_allow_html=True)
             if st.button("✕", key=f"{editor_key}_{selected_name}_label_del_{idx}", help="删除此任务"):
                 st.session_state[pending_del_key].append(idx)
+                # 将当前 updated_item 添加到 new_items（如果尚未添加）
+                # 注意：new_items.append(updated_item) 在按钮之后，但我们需要在计算前包含它
+                current_new_items = list(new_items)  # 当前 new_items 不包含当前项
+                current_new_items.append(updated_item)
+                # 计算更新后的 final_items
+                updated_final_items = [item for i, item in enumerate(current_new_items) if i not in st.session_state[pending_del_key]]
+                # 更新 entry
+                if not updated_final_items:
+                    entry["label_col"] = []
+                elif is_single_structure and len(updated_final_items) == 1:
+                    entry["label_col"] = updated_final_items[0]
+                else:
+                    entry["label_col"] = updated_final_items
+                # 保存到 buffer（如果提供了 data 和 buffer_key）
+                if data is not None and buffer_key is not None:
+                    # 更新 data 中的 entry（entry 已经是 data[selected_name] 的引用，但为了安全）
+                    data[selected_name] = entry
+                    _set_buffered_content(buffer_key, _yaml_dump(data))
+                    st.toast("已删除任务，正在刷新页面...", icon="✅")
                 st.rerun()
         
         new_items.append(updated_item)
@@ -1009,11 +1029,6 @@ def _render_label_col_section(entry, editor_key, selected_name):
     # 过滤被删除项
     final_items = [item for i, item in enumerate(new_items) if i not in deleted_indices]
 
-    # 添加按钮
-    if st.button("➕ 添加任务", key=f"{editor_key}_{selected_name}_label_add", help="添加新任务/标签"):
-        final_items.append(OrderedDict({"name": "new_label", "dtype": "float"}))
-        st.rerun()
-    
     # 更新 entry
     if not final_items:
          # 如果清空了，是否移除 key?
@@ -1022,6 +1037,35 @@ def _render_label_col_section(entry, editor_key, selected_name):
          entry["label_col"] = final_items[0]
     else:
          entry["label_col"] = final_items
+
+    # 添加按钮
+    if st.button("➕ 添加任务", key=f"{editor_key}_{selected_name}_label_add", help="添加新任务/标签"):
+        # 添加新项目到 final_items
+        updated_final_items = list(final_items)  # 创建副本
+        updated_final_items.append(OrderedDict({"name": "new_label", "dtype": "float"}))
+
+        # 更新 entry
+        if not updated_final_items:
+            entry["label_col"] = []
+        elif is_single_structure and len(updated_final_items) == 1:
+            entry["label_col"] = updated_final_items[0]
+        else:
+            entry["label_col"] = updated_final_items
+
+        # 保存到 buffer（如果提供了 data 和 buffer_key）
+        if data is not None and buffer_key is not None:
+            # 更新 data 中的 entry
+            data[selected_name] = entry
+            _set_buffered_content(buffer_key, _yaml_dump(data))
+            st.toast("已添加新任务，正在刷新页面...", icon="✅")
+
+        st.rerun()
+
+    # 保存到 buffer（如果提供了 data 和 buffer_key）以处理文本输入变化
+    if data is not None and buffer_key is not None:
+        # 确保 data 中的 entry 是最新的
+        data[selected_name] = entry
+        _set_buffered_content(buffer_key, _yaml_dump(data))
 
     # 清空 pending deletions
     st.session_state[pending_del_key] = []
@@ -1342,7 +1386,7 @@ def render_dataset_config_body(
 
     # Label Col Editor
     if "label_col" in entry:
-        _render_label_col_section(entry, editor_key, selected_name)
+        _render_label_col_section(entry, editor_key, selected_name, data=data, buffer_key=buffer_key)
 
     feature_cols = entry.get("feature_cols")
     if feature_cols is not None:
@@ -1471,7 +1515,7 @@ def render_dataset_config_body(
     return _yaml_dump(data)
 
 
-def _render_loss_section(label, value, widget_key):
+def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, selected_name=None, editor_key=None):
     """可视化的 Loss 编辑器，兼容混合类型（String/Dict）和多任务"""
 
     # Session state keys for pending additions and deletions
@@ -1554,6 +1598,29 @@ def _render_loss_section(label, value, widget_key):
         # Delete button
         if cols[2].button("✕", key=f"{widget_key}_{idx}_del"):
             st.session_state[pending_del_key].append(idx)
+            # 立即保存到 buffer
+            if data is not None and buffer_key is not None and selected_name is not None:
+                # 合并 pending_add_key 中的项到临时 items 以计算当前值
+                temp_items = list(items)
+                temp_items.extend(st.session_state[pending_add_key])
+                # 过滤 pending deletions（包括刚刚添加的）
+                temp_final_items = [item for i, item in enumerate(temp_items) if i not in st.session_state[pending_del_key]]
+                # 计算最终值
+                if is_single_structure:
+                    if len(temp_final_items) == 1:
+                        final_value = temp_final_items[0]
+                    elif len(temp_final_items) == 0:
+                        final_value = None
+                    else:
+                        final_value = temp_final_items
+                else:
+                    final_value = temp_final_items
+                # 更新 data
+                if selected_name in data:
+                    data[selected_name][label] = final_value
+                # 保存 buffer
+                _set_buffered_content(buffer_key, _yaml_dump(data))
+                st.toast("已删除 loss，正在刷新页面...", icon="✅")
             st.rerun()
             
         # Reconstruct item
@@ -1581,9 +1648,55 @@ def _render_loss_section(label, value, widget_key):
     add_cols = st.columns([0.3, 0.35, 0.35])
     if add_cols[0].button("✚ BCE", key=f"{widget_key}_add_bce", help="添加 binary_crossentropy", use_container_width=True):
         st.session_state[pending_add_key].append("binary_crossentropy")
+        # 立即保存到 buffer
+        if data is not None and buffer_key is not None and selected_name is not None:
+            # 合并 pending_add_key 中的项到临时 items 以计算当前值
+            temp_items = list(items)
+            temp_items.extend(st.session_state[pending_add_key])
+            # 过滤 pending deletions
+            temp_final_items = [item for i, item in enumerate(temp_items) if i not in st.session_state[pending_del_key]]
+            # 计算最终值
+            if is_single_structure:
+                if len(temp_final_items) == 1:
+                    final_value = temp_final_items[0]
+                elif len(temp_final_items) == 0:
+                    final_value = None
+                else:
+                    final_value = temp_final_items
+            else:
+                final_value = temp_final_items
+            # 更新 data
+            if selected_name in data:
+                data[selected_name][label] = final_value
+            # 保存 buffer
+            _set_buffered_content(buffer_key, _yaml_dump(data))
+            st.toast("已添加 BCE loss，正在刷新页面...", icon="✅")
         st.rerun()
     if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss", use_container_width=True):
         st.session_state[pending_add_key].append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
+        # 立即保存到 buffer
+        if data is not None and buffer_key is not None and selected_name is not None:
+            # 合并 pending_add_key 中的项到临时 items 以计算当前值
+            temp_items = list(items)
+            temp_items.extend(st.session_state[pending_add_key])
+            # 过滤 pending deletions
+            temp_final_items = [item for i, item in enumerate(temp_items) if i not in st.session_state[pending_del_key]]
+            # 计算最终值
+            if is_single_structure:
+                if len(temp_final_items) == 1:
+                    final_value = temp_final_items[0]
+                elif len(temp_final_items) == 0:
+                    final_value = None
+                else:
+                    final_value = temp_final_items
+            else:
+                final_value = temp_final_items
+            # 更新 data
+            if selected_name in data:
+                data[selected_name][label] = final_value
+            # 保存 buffer
+            _set_buffered_content(buffer_key, _yaml_dump(data))
+            st.toast("已添加 FocalLoss，正在刷新页面...", icon="✅")
         st.rerun()
     
     # 还原结构逻辑
@@ -1760,7 +1873,7 @@ def render_model_config_body(
     for field in complex_fields:
         widget_key = f"{editor_key}_{selected_name}_{field}"
         if field == "loss":
-            entry[field] = _render_loss_section(field, entry.get(field), widget_key)
+            entry[field] = _render_loss_section(field, entry.get(field), widget_key, data=data, buffer_key=buffer_key, selected_name=selected_name, editor_key=editor_key)
         else:
             entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
 
