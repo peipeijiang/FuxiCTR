@@ -493,6 +493,10 @@ def run_inference(model, feature_map, params, args):
             current_file_total = 0
             current_file_processed = 0
 
+            # Track last logged progress for dashboard
+            last_logged_files_done = -1
+            batch_idx = 0
+
             for batch_data in test_gen:
                 if _stop_event.is_set():
                     logging.warning(f"Rank {rank}: Stop requested, exiting inference loop")
@@ -534,11 +538,12 @@ def run_inference(model, feature_map, params, args):
                         if b_idx not in files_completed_this_batch:
                             files_completed_this_batch.append(b_idx)
 
+                # Count total files completed
+                files_done_count = sum(1 for idx, rows in file_processed_rows.items()
+                                      if file_total_rows.get(idx, 0) > 0 and rows >= file_total_rows[idx])
+
                 # Update progress bars
                 if is_tty and total_pbar:
-                    # Count total files completed across all ranks
-                    files_done_count = sum(1 for idx, rows in file_processed_rows.items()
-                                          if file_total_rows.get(idx, 0) > 0 and rows >= file_total_rows[idx])
                     total_pbar.n = files_done_count
                     total_pbar.refresh()
 
@@ -558,6 +563,13 @@ def run_inference(model, feature_map, params, args):
                             original_fid = block_idx_to_file_idx.get(current_fid, current_fid)
                             file_pbar.set_description(f"Rank {rank}: part_{original_fid}")
                             file_pbar.refresh()
+
+                # Log progress for dashboard (every file completion or every 50 batches)
+                batch_idx += 1
+                if rank == 0 and (files_done_count > last_logged_files_done or batch_idx % 50 == 0):
+                    last_logged_files_done = files_done_count
+                    pct = int(files_done_count * 100 / len(file_total_rows)) if len(file_total_rows) > 0 else 0
+                    logging.info(f"Progress: {files_done_count}/{len(file_total_rows)} files completed ({pct}%)")
 
                 del batch_data
 
