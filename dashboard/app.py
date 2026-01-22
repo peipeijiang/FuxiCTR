@@ -1621,6 +1621,8 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
                 # 保存 buffer
                 _set_buffered_content(buffer_key, _yaml_dump(data))
                 st.toast("已删除 loss，正在刷新页面...", icon="✅")
+            # 清空 pending_del_key，避免 rerun 时重复删除
+            st.session_state[pending_del_key] = []
             st.rerun()
             
         # Reconstruct item
@@ -1671,6 +1673,8 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
             # 保存 buffer
             _set_buffered_content(buffer_key, _yaml_dump(data))
             st.toast("已添加 BCE loss，正在刷新页面...", icon="✅")
+        # 清空 pending_add_key，避免 rerun 时重复添加
+        st.session_state[pending_add_key] = []
         st.rerun()
     if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss", use_container_width=True):
         st.session_state[pending_add_key].append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
@@ -1697,6 +1701,8 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
             # 保存 buffer
             _set_buffered_content(buffer_key, _yaml_dump(data))
             st.toast("已添加 FocalLoss，正在刷新页面...", icon="✅")
+        # 清空 pending_add_key，避免 rerun 时重复添加
+        st.session_state[pending_add_key] = []
         st.rerun()
     
     # 还原结构逻辑
