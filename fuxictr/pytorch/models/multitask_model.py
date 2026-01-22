@@ -300,37 +300,31 @@ class MultiTaskModel(BaseModel):
         last_shared_layer = self._get_last_shared_layer()
 
         if last_shared_layer is not None and self._epoch_index >= 1:
-            # Compute gradients for each task using cloned losses
-            # This avoids interfering with the final total_loss backward pass
+            # Compute gradients for each task using autograd.grad
+            # This preserves the computation graph for loss_weights
             task_gradients = []
             for i, loss in enumerate(loss_list_for_gradnorm):
-                # Retain graph for all but the last task
-                retain = (i < len(loss_list_for_gradnorm) - 1)
-                if last_shared_layer.weight.grad is not None:
-                    last_shared_layer.weight.grad.zero_()
-                
-                loss.backward(retain_graph=True)
-                
-                if last_shared_layer.weight.grad is not None:
-                    task_gradients.append(last_shared_layer.weight.grad.clone())
-                else:
-                    task_gradients.append(torch.zeros_like(last_shared_layer.weight))
-            
-            # Clear gradients before GradNorm update
-            self.optimizer.zero_grad()
-            
+                # Compute gradient w.r.t shared layer weights, retain graph
+                grad = torch.autograd.grad(
+                    loss,
+                    last_shared_layer.weight,
+                    create_graph=True,  # Important: preserve graph for second-order grads
+                    retain_graph=(i < len(loss_list_for_gradnorm) - 1)
+                )[0]
+                task_gradients.append(grad)
+
             # Stack gradients: [num_tasks, ...]
             if len(task_gradients) > 0:
-                # Compute gradient norms for each task
-                # Detach loss_weights to avoid creating a new computation graph
+                # Compute weighted gradient norms for each task
+                # loss_weights requires grad, so gradnorm_loss can backprop to it
                 grad_norms = torch.stack([
-                    torch.norm(loss_weights[i].detach() * grad, p=2)
+                    torch.norm(loss_weights[i] * grad, p=2)
                     for i, grad in enumerate(task_gradients)
                 ])
-                
+
                 # Average gradient norm
                 mean_grad_norm = grad_norms.mean()
-                
+
                 # Compute relative inverse training rates
                 with torch.no_grad():
                     loss_ratios = torch.tensor([
@@ -338,13 +332,17 @@ class MultiTaskModel(BaseModel):
                         for i in range(len(loss_list))
                     ], device=self.device)
                     inverse_train_rates = loss_ratios / (loss_ratios.mean() + 1e-8)
-                
+
                 # GradNorm loss: balance gradient norms
                 target_grad_norms = mean_grad_norm * (inverse_train_rates ** self.gradnorm.alpha)
                 gradnorm_loss = torch.abs(grad_norms - target_grad_norms.detach()).sum()
-                
-                # Backward pass for GradNorm
+
+                # Backward pass for GradNorm to update loss_weights
+                # Only update gradnorm parameters (loss_scale), not model params
+                gradnorm_optimizer = torch.optim.Adam([self.gradnorm.loss_scale], lr=0.01)
+                gradnorm_optimizer.zero_grad()
                 gradnorm_loss.backward()
+                gradnorm_optimizer.step()
         
         # Final backward pass with updated weights
         self.optimizer.zero_grad()
