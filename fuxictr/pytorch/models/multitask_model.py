@@ -279,32 +279,28 @@ class MultiTaskModel(BaseModel):
         self.optimizer.zero_grad()
         return_dict = self.forward(batch_data)
         y_true = self.get_labels(batch_data)
-        
+
         # Get individual task losses
         loss_list = self.add_loss(return_dict, y_true)
-        # Clone losses to avoid computation graph conflicts
-        # We need two copies: one for GradNorm gradient computation,
-        # and one for final parameter update
-        loss_list_for_gradnorm = [loss.clone() for loss in loss_list]
-        
+
         # Store initial losses in the first iteration
         if not self.gradnorm.has_initial_losses:
             with torch.no_grad():
                 self.gradnorm.initial_losses = torch.tensor(
-                    [loss.item() for loss in loss_list], 
+                    [loss.item() for loss in loss_list],
                     device=self.device
                 )
                 self.gradnorm.has_initial_losses = torch.tensor(True)
-        
+
         # Get current loss weights
         loss_weights = self.gradnorm.get_loss_weights()
-        
+
         # Weighted sum of losses
         weighted_loss = sum(w * l for w, l in zip(loss_weights, loss_list))
         reg_loss = self.regularization_loss()
         main_loss = weighted_loss
         total_loss = main_loss + reg_loss
-        
+
         # Get the last shared layer for gradient computation
         # We need to identify a shared representation layer
         last_shared_layer = self._get_last_shared_layer()
@@ -313,13 +309,13 @@ class MultiTaskModel(BaseModel):
             # Compute gradients for each task using autograd.grad
             # This preserves the computation graph for loss_weights
             task_gradients = []
-            for i, loss in enumerate(loss_list_for_gradnorm):
+            for i, loss in enumerate(loss_list):
                 # Compute gradient w.r.t shared layer weights, retain graph
                 grad = torch.autograd.grad(
                     loss,
                     last_shared_layer.weight,
                     create_graph=True,  # Important: preserve graph for second-order grads
-                    retain_graph=(i < len(loss_list_for_gradnorm) - 1)
+                    retain_graph=True  # Always retain graph for gradnorm
                 )[0]
                 task_gradients.append(grad)
 
@@ -351,18 +347,18 @@ class MultiTaskModel(BaseModel):
                 # Use cached optimizer to preserve momentum state across iterations
                 gradnorm_optimizer = self.gradnorm.get_optimizer()
                 gradnorm_optimizer.zero_grad()
-                gradnorm_loss.backward()
+                gradnorm_loss.backward(retain_graph=True)  # Retain for total_loss
                 gradnorm_optimizer.step()
-        
+
         # Final backward pass with updated weights
         self.optimizer.zero_grad()
         total_loss.backward()
         self._sync_gradients()
         grad_norm = nn.utils.clip_grad_norm_(self.parameters(), self._max_gradient_norm)
         self.optimizer.step()
-        
+
         return total_loss, main_loss, reg_loss, grad_norm
-    
+
     def _get_last_shared_layer(self):
         """Get the last shared layer for GradNorm gradient computation.
         Override this method in specific models to identify the shared representation layer.
