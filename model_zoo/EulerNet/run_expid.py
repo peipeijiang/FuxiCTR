@@ -584,6 +584,33 @@ def run_inference(model, feature_map, params, args):
             writer_wrapper.close()
             logger.setLevel(original_level)
 
+    # 立即重命名：每个rank完成处理的文件直接重命名为最终文件名
+    # 这样可以及时释放内存，不需要等到最后的全局merge
+    finalize_count = 0
+    temp_files = glob.glob(os.path.join(output_dir, f"part_*_rank{rank}.parquet"))
+    for temp_file in temp_files:
+        try:
+            basename = os.path.basename(temp_file)
+            # 从 part_0_rank0.parquet 提取 part_0
+            match = re.match(r'part_(\d+)_rank\d+\.parquet', basename)
+            if match:
+                part_num = match.group(1)
+                final_file = os.path.join(output_dir, f"part_{part_num}.parquet")
+                # 检查是否已存在（可能被其他rank重命名了）
+                if not os.path.exists(final_file):
+                    os.rename(temp_file, final_file)
+                    finalize_count += 1
+                    if rank == 0:  # 只打印rank 0的日志
+                        logging.info(f"Finalized part_{part_num}.parquet")
+                else:
+                    # 文件已存在，删除临时文件
+                    os.remove(temp_file)
+        except Exception as e:
+            logging.warning(f"Rank {rank}: Failed to finalize {temp_file}: {e}")
+
+    if finalize_count > 0 and rank == 0:
+        logging.info(f"Rank {rank}: Finalized {finalize_count} files")
+
     if distributed and dist.is_initialized() and not _stop_event.is_set():
         distributed_barrier()
 
