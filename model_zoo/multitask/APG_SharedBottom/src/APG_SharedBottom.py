@@ -114,8 +114,9 @@ class APG_SharedBottom(MultiTaskModel):
         for i, tower in enumerate(self.towers):
             task_output = tower(shared_output, condition_z)
             task_outputs.append(task_output)
-        y_pred = [torch.sigmoid(out) for out in task_outputs]
-        
+        # Use output_activation to handle sigmoid based on task type
+        y_pred = [self.output_activation[i](out) for i, out in enumerate(task_outputs)]
+
         return_dict = {}
         labels = self.feature_map.labels
         for i in range(self.num_tasks):

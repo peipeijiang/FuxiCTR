@@ -83,20 +83,24 @@ def get_loss(loss, task="binary_classification"):
         loss = loss.get("name") or loss.get("fn")
     if isinstance(loss, str):
         if loss in ["bce", "binary_crossentropy", "binary_cross_entropy"]:
-            loss = "binary_cross_entropy"
+            # Choose the right BCE variant based on task type
+            if task == "binary_classification_logits":
+                loss = "binary_cross_entropy_with_logits"
+            else:
+                loss = "binary_cross_entropy"
 
-    # Special handling for focal_loss: always use from_logits=True for numerical stability
+    # Special handling for focal_loss: from_logits is based on task type
     if isinstance(loss, str) and loss.lower() == "focalloss":
         loss = "FocalLoss"
 
     if isinstance(loss, str) and loss == "FocalLoss":
-        # focal_loss always uses from_logits=True (numerically stable)
-        # But allow explicit override via params if user really wants to
+        # Use from_logits based on task type
         if "from_logits" not in params:
-            params["from_logits"] = True
+            params["from_logits"] = (task == "binary_classification_logits")
         # Log for user awareness
         import logging
-        logging.info(f"FocalLoss: from_logits=True (numerically stable, model output should be logits)")
+        logits_status = "True" if params["from_logits"] else "False"
+        logging.info(f"FocalLoss: from_logits={logits_status} (task={task})")
 
     try:
         loss_fn = getattr(torch.functional.F, loss)
