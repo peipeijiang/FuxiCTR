@@ -16,6 +16,12 @@
 4. [任务执行](#4-任务执行)
 5. [全流程管理](#5-全流程管理)
 6. [常见问题](#6-常见问题)
+7. [进阶功能](#7-进阶功能)
+   - [7.1 数据集覆盖模式](#71-数据集覆盖模式)
+   - [7.2 多任务学习](#72-多任务学习)
+   - [7.3 多任务损失权重配置](#73-多任务损失权重配置)
+   - [7.4 Hash Embedding 配置](#74-hash-embedding-配置)
+   - [7.5 参数调优](#75-参数调优)
 
 ---
 
@@ -481,7 +487,201 @@ loss: [binary_crossentropy, binary_crossentropy]
 metrics: [[logloss, AUC], [logloss, AUC]]
 ```
 
-### 7.3 参数调优
+### 7.3 多任务损失权重配置
+
+在多任务学习中，不同任务的重要性可能不同，需要配置损失权重来平衡各任务的训练。FuxiCTR 支持三种权重配置方式：
+
+#### 方式一：手动权重
+
+手动指定每个任务的权重系数：
+
+```yaml
+MMoE_manual:
+    model: MMoE
+    task: [ctr, cvr]
+    loss: [binary_crossentropy, binary_crossentropy]
+
+    # 手动设置权重：ctr 40%, cvr 60%
+    loss_weight: [0.4, 0.6]
+```
+
+**适用场景**：
+- 对任务重要性有明确认知
+- 业务目标有优先级差异
+- 需要精细控制各任务贡献
+
+#### 方式二：不确定性加权（Uncertainty Weighting, UW）
+
+自动学习任务权重，基于任务的不确定性动态调整：
+
+```yaml
+MMoE_with_UW:
+    model: MMoE
+    task: [ctr, cvr]
+    loss: [binary_crossentropy, binary_crossentropy]
+
+    # 使用不确定性加权
+    loss_weight: 'UW'
+
+    # UW相关参数（可选）
+    uw_init_log_sigma: [0.0, 0.0]  # 初始log sigma值
+```
+
+**原理说明**：
+- UW 方法为每个任务学习一个可训练的参数 σ（不确定性）
+- 权重计算：`weight = 1 / (2 * σ^2)`
+- 不确定性高的任务（难学的任务）会被赋予较低权重
+- 不确定性低的任务（容易学的任务）会被赋予较高权重
+
+**优点**：
+- 自动适应任务难度
+- 无需人工调参
+- 对噪声任务鲁棒
+
+**适用场景**：
+- 任务难度差异较大
+- 不确定最佳权重配比
+- 希望自动平衡多任务
+
+#### 方式三：GradNorm
+
+基于梯度平衡的动态权重调整：
+
+```yaml
+MMoE_with_GradNorm:
+    model: MMoE
+    task: [ctr, cvr]
+    loss: [binary_crossentropy, binary_crossentropy]
+
+    # 使用GradNorm
+    loss_weight: 'GN'
+
+    # GradNorm参数（可选）
+    gradnorm_alpha: 1.5    # 平衡系数，通常0.5-2.0
+    gradnorm_steps: 1      # 每N步更新一次权重
+```
+
+**原理说明**：
+- GradNorm 通过监控各任务损失的学习速率来调整权重
+- 确保所有任务以相近的速率学习
+- 避免某个任务主导训练过程
+
+**优点**：
+- 平衡各任务学习进度
+- 防止简单任务过拟合
+- 提升整体性能
+
+**适用场景**：
+- 各任务学习速度差异大
+- 某些任务收敛过快
+- 需要平衡所有任务表现
+
+#### 权重配置对比
+
+| 方法 | 配置复杂度 | 自动调整 | 适用场景 |
+|------|-----------|---------|---------|
+| 手动权重 | 低 | 否 | 权重明确、业务优先级清晰 |
+| UW | 低 | 是 | 任务难度差异大、不确定权重 |
+| GradNorm | 中 | 是 | 学习速度不均、需平衡进度 |
+
+### 7.4 Hash Embedding 配置
+
+对于高基数（高基数类别）特征（如用户ID、商品ID），传统 Embedding 可能消耗大量内存。Hash Embedding 通过哈希函数将特征映射到固定大小的向量空间，大幅减少内存占用。
+
+#### 配置示例
+
+```yaml
+# 全局Hash Embedding配置
+feature_encoder: "hash"       # 使用hash编码器
+hash_bits: 24                # hash空间大小：2^24 = 16,777,216
+
+MMoE_hash:
+    model: MMoE
+    dataset_id: large_dataset
+
+    # 特征列配置
+    feature_cols:
+        # 高基数特征使用hash
+        -   name: user_id
+            active: True
+            dtype: str
+            type: categorical
+            embedding_dim: 16
+            feature_encoder: "hash"     # 单独指定hash
+            hash_bits: 24               # 单独指定hash空间
+
+        # 低基数特征使用正常embedding
+        -   name: gender
+            active: True
+            dtype: str
+            type: categorical
+            embedding_dim: 8
+            # 不指定feature_encoder，使用默认
+```
+
+#### Hash Bits 选择指南
+
+| hash_bits | 表空间 | 内存占用 (16维) | 适用场景 |
+|-----------|--------|----------------|---------|
+| 18 | 262K | ~8MB | 小规模、特征基教适中 |
+| 20 | 1M | ~32MB | 中等规模 |
+| 22 | 4M | ~128MB | 较大规模 |
+| 24 | 16M | ~512MB | 大规模、高基数特征 |
+| 26 | 67M | ~2GB | 超大规模（谨慎使用） |
+
+**内存计算公式**：
+```
+内存(MB) ≈ (2^hash_bits) × embedding_dim × 4字节 / (1024×1024)
+```
+
+#### Hash Embedding 优缺点
+
+**优点**：
+- 内存占用固定，不受特征基数影响
+- 支持未知特征值（测试集新特征）
+- 减少过拟合风险
+
+**缺点**：
+- 存在哈希冲突（不同特征可能映射到同一向量）
+- 可能损失部分特征信息
+- 需要权衡 hash_bits 和模型效果
+
+#### 最佳实践
+
+```yaml
+# 推荐配置：选择性使用Hash
+MMoE_mixed:
+    model: MMoE
+
+    # 全局不启用hash
+    # feature_encoder: "normal"
+
+    feature_cols:
+        # 高基数特征：使用hash
+        -   name: user_id           # 假设1000万+不同值
+            type: categorical
+            embedding_dim: 16
+            feature_encoder: "hash"
+            hash_bits: 24
+
+        -   name: item_id           # 假设500万+不同值
+            type: categorical
+            embedding_dim: 16
+            feature_encoder: "hash"
+            hash_bits: 22
+
+        # 低基数特征：使用正常embedding
+        -   name: gender            # 只有2-10个不同值
+            type: categorical
+            embedding_dim: 8
+            # 不指定feature_encoder
+
+        -   name: age_group         # 只有5-10个不同值
+            type: categorical
+            embedding_dim: 8
+```
+
+### 7.5 参数调优
 
 使用参数调优功能：
 

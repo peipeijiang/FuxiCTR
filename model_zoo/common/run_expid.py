@@ -168,8 +168,23 @@ def run_train(model, feature_map, params, args):
         test_result = model.evaluate(test_gen)
 
     if rank == 0:
-        result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
-        with open(result_filename, 'a+') as fw:
+        # 根据 run_mode 决定 CSV 路径（v2.0 架构：Dashboard vs Workflow 分离）
+        run_mode = params.get("run_mode", "dashboard")
+
+        if run_mode == "workflow":
+            # Workflow 模式：生成在 workflow_models/results/ 下
+            model_name = params.get("model", "unknown")
+            results_dir = "workflow_models/results"
+            os.makedirs(results_dir, exist_ok=True)
+            csv_path = os.path.join(results_dir, f"{model_name}_workflow_results.csv")
+        else:
+            # Dashboard 模式：生成在模型目录下（原有逻辑）
+            config_dir = os.path.dirname(args.get('config', '.'))
+            result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
+            csv_path = os.path.join(config_dir, "..", result_filename)
+
+        # 写入 CSV
+        with open(csv_path, 'a+') as fw:
             fw.write(' {},[command] python {},[exp_id] {},[dataset_id] {},[train] {},[val] {},[test] {}\n' \
                 .format(datetime.now().strftime('%Y%m%d-%H%M%S'),
                         ' '.join(sys.argv), args['expid'], params['dataset_id'],

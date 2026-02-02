@@ -1,23 +1,108 @@
-# Workflow configuration
+# =========================================================================
+# FuxiCTR Workflow Configuration - 双服务器部署方案
+# =========================================================================
+#
+# 架构说明:
+#   Server 21 (数据源): 运行 Hive/Spark，存储原始数据
+#   Server 142 (训练服务器): 运行 FuxiCTR 框架，执行训练和推理
+#
+# 数据流向:
+#   Server 21 (SQL) → Parquet → SSH/rsync → Server 142 (Staging) → build_dataset → 训练
+# =========================================================================
 
+# ----------------------------------------------------------------------------
+# 服务器配置
+# ----------------------------------------------------------------------------
 servers:
+  # Server 21 - 数据源服务器
   server_21:
-    host: "your-server-21-host"
-    port: 22
-    username: "username"
-    key_path: "/path/to/private/key"
+    host: "21.xxxxxx.com"           # TODO: 替换为实际主机名或IP
+    port: 22                         # SSH端口，默认22
+    username: "your_username"        # TODO: SSH用户名
+    key_path: "~/.ssh/id_rsa"        # TODO: SSH私钥路径
 
+# ----------------------------------------------------------------------------
+# 存储路径配置
+# ----------------------------------------------------------------------------
 storage:
-  shared_dir: "/mnt/shared_data"
-  staging_dir: "/data/staging"
-  checkpoint_dir: "/data/checkpoints"
+  # Server 21上的临时存储目录（SQL导出的parquet文件）
+  server_21_staging: "/tmp/fuxictr_staging"
 
+  # Server 142上的staging目录（从Server 21传输过来的数据）
+  staging_dir: "/data/fuxictr/staging"
+
+  # 模型checkpoint目录
+  checkpoint_dir: "/data/fuxictr/checkpoints"
+
+# ----------------------------------------------------------------------------
+# FuxiCTR 框架路径配置
+# ----------------------------------------------------------------------------
+fuxictr_paths:
+  # App使用的数据目录（用户手动上传的训练集）
+  # 用于非workflow场景，用户通过前端手动配置数据路径
+  data_root: "../../../data/"
+
+  # Workflow使用的数据目录（标准化结构，按exp_id.dataset_id组织）
+  # 目录结构: datasets_root/{exp_id.dataset_id}/raw/, processed/, inference_output/
+  datasets_root: "/data/fuxictr/datasets"
+
+  # 统一的模型保存目录（按exp_id.dataset_id组织）
+  # 实际路径: model_zoo/{model_name}/checkpoints/{exp_id.dataset_id}/
+  # 这里配置为model_zoo根目录，具体路径由各模型自行管理
+  model_root: "../../../model_zoo"
+
+# ----------------------------------------------------------------------------
+# 数据传输配置 (SSH/rsync)
+# ----------------------------------------------------------------------------
 transfer:
-  chunk_size: 10485760  # 10MB
-  max_retries: 3
-  parallel_workers: 4
+  # 每次传输的块大小 (字节)
+  # 100MB = 100 * 1024 * 1024 = 104857600
+  chunk_size: 104857600
+
+  # 传输失败时的最大重试次数
+  max_retries: 10
+
+  # 是否启用压缩传输
+  compression: true
+
+  # 是否验证校验和
   verify_checksum: true
 
-task:
+  # rsync并行传输数
+  parallel_workers: 4
+
+  # 传输超时时间（秒）
+  timeout: 300
+
+# ----------------------------------------------------------------------------
+# Workflow任务配置
+# ----------------------------------------------------------------------------
+workflow:
+  # 心跳间隔（秒）
   heartbeat_interval: 30
-  log_rotation_size: 104857600  # 100MB
+
+  # 日志轮转大小（字节）
+  # 100MB = 104857600
+  log_rotation_size: 104857600
+
+  # 任务执行超时时间（秒）
+  # 默认24小时
+  task_timeout: 86400
+
+# ----------------------------------------------------------------------------
+# 数据库配置
+# ----------------------------------------------------------------------------
+database:
+  # SQLite数据库路径
+  path: "workflow_tasks.db"
+
+  # 数据备份路径
+  backup_dir: "/data/fuxictr/db_backup"
+
+# ----------------------------------------------------------------------------
+# 日志配置
+# ----------------------------------------------------------------------------
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "workflow.log"

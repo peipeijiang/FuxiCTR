@@ -70,11 +70,31 @@ class BaseModel(nn.Module):
         self.task = task
         self.model_id = model_id
         self.model_dir = os.path.join(kwargs["model_root"], feature_map.dataset_id)
-        self.checkpoint = os.path.abspath(os.path.join(self.model_dir, self.model_id + ".model"))
+
+        # 为每个实验创建独立文件夹（v2.0 架构）
+        # 新结构: model_root/{dataset_id}/{exp_id}/{exp_id}.model
+        # 旧结构: model_root/{dataset_id}/{exp_id}.model (向后兼容)
+        self.exp_dir = os.path.join(self.model_dir, self.model_id)
+        os.makedirs(self.exp_dir, exist_ok=True)
+
+        # 模型文件在实验文件夹内
+        self.checkpoint = os.path.abspath(os.path.join(self.exp_dir, self.model_id + ".model"))
+
+        # Epoch checkpoints 目录（可选）
+        self.checkpoint_dir = os.path.join(self.exp_dir, "checkpoints")
+        if not os.path.exists(self.checkpoint_dir):
+            try:
+                os.makedirs(self.checkpoint_dir, exist_ok=True)
+            except:
+                pass  # 目录可能已存在或权限问题
+
         self.validation_metrics = kwargs["metrics"]
         self._nan_debug = bool(int(os.environ.get("FUXICTR_DEBUG_NAN", "1")))
+
+        # TensorBoard 日志也在实验文件夹内
         if SummaryWriter and self._is_master:
-            self.writer = SummaryWriter(log_dir=os.path.join(self.model_dir, self.model_id))
+            tb_log_dir = os.path.join(self.exp_dir, "tensorboard")
+            self.writer = SummaryWriter(log_dir=tb_log_dir)
         else:
             self.writer = None
 

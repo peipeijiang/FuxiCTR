@@ -3,6 +3,8 @@ import requests
 import os
 import yaml
 from datetime import datetime
+import json
+import time
 
 API_BASE = "http://localhost:8001"
 
@@ -223,6 +225,222 @@ task_id = query_params.get("task_id", None)
 
 st.title("全流程管理")
 
+
+def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: bool = True):
+    """
+    Render a WebSocket-based real-time log viewer.
+
+    This component uses JavaScript WebSocket API to receive real-time logs
+    from the backend workflow service.
+    """
+    ws_url = f"ws://localhost:8001/api/workflow/tasks/{task_id}/logs"
+
+    # HTML/JS component for WebSocket
+    html_code = f"""
+    <div id="log-container-{task_id}" style="
+        background: #1e1e1e;
+        border-radius: 8px;
+        padding: 16px;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 13px;
+        color: #d4d4d4;
+        max-height: 500px;
+        overflow-y: auto;
+        border: 1px solid #3e3e3e;
+        box-shadow: inset 0 2px 8px rgba(0,0,0,0.3);
+    ">
+        <div id="log-header-{task_id}" style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #3e3e3e;
+        ">
+            <span style="color: #569cd6; font-weight: 600;">📡 实时日志流</span>
+            <span id="ws-status-{task_id}" style="
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 11px;
+                background: #3e3e3e;
+                color: #808080;
+            ">未连接</span>
+        </div>
+        <div id="log-content-{task_id}" style="
+            line-height: 1.6;
+        ">
+            <div style="color: #808080; font-style: italic;">等待日志数据...</div>
+        </div>
+    </div>
+
+    <script>
+    (function() {{
+        const wsUrl = "{ws_url}";
+        const logContainer = document.getElementById('log-content-{task_id}');
+        const statusElement = document.getElementById('ws-status-{task_id}');
+        const mainContainer = document.getElementById('log-container-{task_id}');
+
+        let ws = null;
+        let reconnectTimeout = null;
+        let messageCount = 0;
+        const MAX_MESSAGES = 500; // Prevent DOM overflow
+
+        // Color schemes for different log types
+        const COLORS = {{
+            'log': '#d4d4d4',
+            'progress': '#4ec9b0',
+            'metric': '#dcdcaa',
+            'error': '#f14c4c',
+            'complete': '#4ec9b0',
+            'status': '#569cd6'
+        }};
+
+        const LEVEL_COLORS = {{
+            'INFO': '#d4d4d4',
+            'WARNING': '#dcdcaa',
+            'ERROR': '#f14c4c',
+            'DEBUG': '#808080'
+        }};
+
+        function formatTime(timestamp) {{
+            return timestamp || new Date().toLocaleTimeString('zh-CN');
+        }}
+
+        function escapeHtml(text) {{
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }}
+
+        function addLogMessage(data) {{
+            // Limit message count
+            if (messageCount > MAX_MESSAGES) {{
+                logContainer.innerHTML = '';
+                messageCount = 0;
+            }}
+
+            const msgType = data.type || 'log';
+            const step = data.step || 'system';
+            const timestamp = formatTime(data.timestamp);
+
+            let logLine = '';
+            let color = COLORS[msgType] || COLORS['log'];
+
+            if (msgType === 'log') {{
+                const level = data.data?.level || 'INFO';
+                const levelColor = LEVEL_COLORS[level] || LEVEL_COLORS['INFO'];
+                const message = escapeHtml(data.data?.message || '');
+                logLine = `<div style="color: {{color}};">
+                    <span style="color: #808080;">[${{timestamp}}]</span>
+                    <span style="color: #569cd6;">[{{step}}]</span>
+                    <span style="color: ${{levelColor}};">[{{level}}]</span>
+                    {{message}}
+                </div>`;
+            }} else if (msgType === 'progress') {{
+                const current = data.data?.current || 0;
+                const total = data.data?.total || 0;
+                const percent = data.data?.percent || 0;
+                const message = data.data?.message || '';
+                logLine = `<div style="color: {{color}};">
+                    <span style="color: #808080;">[${{timestamp}}]</span>
+                    <span style="color: #569cd6;">[{{step}}]</span>
+                    <span style="color: #4ec9b0;">⏳ 进度: ${{current}}/${{total}} (${{percent}}%)</span>
+                    ${{message ? ' - ' + escapeHtml(message) : ''}}
+                </div>`;
+            }} else if (msgType === 'metric') {{
+                const name = data.data?.name || '';
+                const value = data.data?.value || '';
+                const unit = data.data?.unit || '';
+                logLine = `<div style="color: {{color}};">
+                    <span style="color: #808080;">[${{timestamp}}]</span>
+                    <span style="color: #569cd6;">[{{step}}]</span>
+                    <span style="color: #dcdcaa;">📊 ${{name}}: ${{value}}${{unit}}</span>
+                </div>`;
+            }} else if (msgType === 'error') {{
+                const message = escapeHtml(data.data?.message || '');
+                logLine = `<div style="color: {{color}};">
+                    <span style="color: #808080;">[${{timestamp}}]</span>
+                    <span style="color: #569cd6;">[{{step}}]</span>
+                    <span style="color: #f14c4c;">❌ 错误: {{message}}</span>
+                </div>`;
+            }} else if (msgType === 'complete') {{
+                logLine = `<div style="color: {{color}};">
+                    <span style="color: #808080;">[${{timestamp}}]</span>
+                    <span style="color: #569cd6;">[{{step}}]</span>
+                    <span style="color: #4ec9b0;">✅ 完成</span>
+                </div>`;
+            }} else if (msgType === 'status') {{
+                logLine = `<div style="color: {{color}};">
+                    <span style="color: #808080;">[${{timestamp}}]</span>
+                    <span style="color: #569cd6;">[状态更新]</span>
+                    状态: ${{data.data?.status || 'unknown'}},
+                    当前步骤: ${{data.data?.current_step || 0}}
+                </div>`;
+            }}
+
+            logContainer.innerHTML += logLine;
+            messageCount++;
+
+            // Auto-scroll to bottom
+            mainContainer.scrollTop = mainContainer.scrollHeight;
+        }}
+
+        function connect() {{
+            if (ws) {{
+                ws.close();
+            }}
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function() {{
+                console.log('WebSocket connected');
+                statusElement.textContent = '已连接';
+                statusElement.style.background = '#4ec9b0';
+                statusElement.style.color = '#1e1e1e';
+                clearTimeout(reconnectTimeout);
+            }};
+
+            ws.onmessage = function(event) {{
+                try {{
+                    const data = JSON.parse(event.data);
+                    addLogMessage(data);
+                }} catch (e) {{
+                    console.error('Failed to parse message:', e);
+                }}
+            }};
+
+            ws.onerror = function(error) {{
+                console.error('WebSocket error:', error);
+                statusElement.textContent = '连接错误';
+                statusElement.style.background = '#f14c4c';
+            }};
+
+            ws.onclose = function() {{
+                console.log('WebSocket disconnected');
+                statusElement.textContent = '已断开';
+                statusElement.style.background = '#3e3e3e';
+                statusElement.style.color = '#808080';
+
+                // Reconnect after 3 seconds
+                reconnectTimeout = setTimeout(connect, 3000);
+            }};
+        }}
+
+        // Start connection
+        connect();
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {{
+            if (ws) ws.close();
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        }});
+    }})();
+    </script>
+    """
+
+    container.html(html_code)
+
+
 # ========== TASK DETAIL VIEW ==========
 if task_id:
     # Fetch task details
@@ -281,6 +499,150 @@ if task_id:
                 </div>''' if task.get('experiment_id') else ''}
             </div>
         """, unsafe_allow_html=True)
+
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+        # Progress Metrics Section
+        st.subheader("执行进度")
+
+        # Fetch progress
+        progress_response = requests.get(f"{API_BASE}/api/workflow/tasks/{task_id}/progress")
+        if progress_response.status_code == 200:
+            progress = progress_response.json()
+
+            # Progress bar
+            current_step = progress.get('current_step', 0)
+            total_steps = progress.get('total_steps', 5)
+            progress_percent = int((current_step / total_steps) * 100) if total_steps > 0 else 0
+
+            st.markdown(f"""
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="font-size: 13px; color: #6b7280;">整体进度</span>
+                        <span style="font-size: 13px; font-weight: 600; color: #374151;">{current_step}/{total_steps} 步骤</span>
+                    </div>
+                    <div style="
+                        width: 100%;
+                        height: 8px;
+                        background: #e5e7eb;
+                        border-radius: 4px;
+                        overflow: hidden;
+                    ">
+                        <div style="
+                            width: {progress_percent}%;
+                            height: 100%;
+                            background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+                            border-radius: 4px;
+                            transition: width 0.3s ease;
+                        "></div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # Step progress grid
+            steps_data = progress.get('steps', [])
+            if steps_data:
+                st.markdown('<div style="height: 16px;"></div>', unsafe_allow_html=True)
+
+                # Create 5 columns for steps
+                num_steps = len(steps_data)
+                step_cols = st.columns(num_steps)
+
+                for i, step_col in enumerate(step_cols):
+                    step_data = steps_data[i]
+                    step_status = step_data.get('status', 'pending')
+                    is_completed = step_status == 'completed'
+                    is_running = step_status == 'running'
+                    is_failed = step_status == 'failed'
+
+                    # Step icon
+                    if is_completed:
+                        icon = "✅"
+                        bg_color = "#ecfdf5"
+                        border_color = "#10b981"
+                    elif is_running:
+                        icon = "🔄"
+                        bg_color = "#eff6ff"
+                        border_color = "#3b82f6"
+                    elif is_failed:
+                        icon = "❌"
+                        bg_color = "#fef2f2"
+                        border_color = "#ef4444"
+                    else:
+                        icon = "⏳"
+                        bg_color = "#f3f4f6"
+                        border_color = "#d1d5db"
+
+                    step_name_cn = get_step_name_chinese(step_data.get('name', ''))
+
+                    with step_col:
+                        st.markdown(f"""
+                            <div style="
+                                text-align: center;
+                                padding: 12px 8px;
+                                background: {bg_color};
+                                border: 2px solid {border_color};
+                                border-radius: 8px;
+                                position: relative;
+                            ">
+                                <div style="font-size: 20px; margin-bottom: 4px;">{icon}</div>
+                                <div style="font-size: 12px; font-weight: 600; color: #374151;">{step_name_cn}</div>
+                                <div style="font-size: 10px; color: #6b7280; margin-top: 2px;">
+                                    {step_data.get('started_at', '')[:16] if step_data.get('started_at') else '未开始'}
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+
+        # Metrics section
+        st.markdown('<div style="height: 16px;"></div>', unsafe_allow_html=True)
+        metrics_response = requests.get(f"{API_BASE}/api/workflow/tasks/{task_id}/metrics")
+        if metrics_response.status_code == 200:
+            metrics_data = metrics_response.json().get('metrics', [])
+            if metrics_data:
+                st.markdown("""
+                    <div style="
+                        margin-bottom: 16px;
+                        padding-bottom: 8px;
+                        border-bottom: 2px solid #e5e7eb;
+                    ">
+                        <span style="
+                            font-size: 15px;
+                            font-weight: 600;
+                            color: #1f2937;
+                        ">执行指标</span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+                # Display metrics by stage
+                for metric in metrics_data:
+                    stage_name = metric.get('step_name', '')
+                    stage_name_cn = get_step_name_chinese(stage_name)
+                    stage_status = metric.get('status', 'pending')
+
+                    with st.expander(f"📊 {stage_name_cn} 指标"):
+                        col_m1, col_m2 = st.columns(2)
+
+                        with col_m1:
+                            if metric.get('duration_seconds'):
+                                st.metric("执行时间", f"{metric['duration_seconds']:.1f}s")
+                            if metric.get('bytes_transferred'):
+                                st.metric("传输数据", f"{metric['bytes_transferred'] / 1024 / 1024:.1f} MB")
+                            if metric.get('files_transferred'):
+                                st.metric("传输文件数", f"{metric['files_transferred']}")
+
+                        with col_m2:
+                            if stage_name == 'train':
+                                if metric.get('epochs_completed'):
+                                    st.metric("训练轮次", f"{metric['epochs_completed']}")
+                                if metric.get('best_auc'):
+                                    st.metric("最佳AUC", f"{metric['best_auc']:.4f}")
+                                if metric.get('best_loss'):
+                                    st.metric("最佳Loss", f"{metric['best_loss']:.4f}")
+                            elif stage_name == 'infer':
+                                if metric.get('rows_processed'):
+                                    st.metric("处理行数", f"{metric['rows_processed']:,}")
+                                if metric.get('inference_throughput'):
+                                    st.metric("吞吐量", f"{metric['inference_throughput']:.0f} rows/s")
 
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -469,41 +831,19 @@ if task_id:
         # Show logs for current task or running task
         log_task_id = st.session_state.get("running_task_id", task_id)
 
-        if st.button("刷新日志", key=f"refresh_{task_id}"):
-            st.rerun()
+        # Auto-refresh toggle
+        col_refresh, col_status = st.columns([3, 1])
+        with col_refresh:
+            auto_refresh = st.checkbox("自动刷新", value=True, key=f"auto_refresh_{task_id}")
+        with col_status:
+            if st.button("刷新", key=f"refresh_{task_id}"):
+                st.rerun()
 
-        log_placeholder = st.empty()
+        # WebSocket Real-time Log Component
+        ws_logs_placeholder = st.empty()
 
-        # Fetch task steps
-        steps_response = requests.get(f"{API_BASE}/api/workflow/tasks/{log_task_id}/steps")
-        if steps_response.status_code == 200:
-            steps = steps_response.json()
-            if steps:
-                for step in steps:
-                    # Get Chinese step name and status badge
-                    step_name_cn = get_step_name_chinese(step['step_name'])
-                    status_text = {
-                        "pending": "待处理",
-                        "running": "运行中",
-                        "completed": "已完成",
-                        "failed": "失败"
-                    }.get(step['status'].lower(), step['status'].upper())
-
-                    # Display with status icon and Chinese name
-                    status_icon = {
-                        "pending": "⏳",
-                        "running": "🔄",
-                        "completed": "✅",
-                        "failed": "❌"
-                    }.get(step['status'].lower(), "⏳")
-
-                    with st.expander(f"{status_icon} {step_name_cn} ({status_text})"):
-                        st.write(f"**开始时间:** {step.get('started_at', '未开始')}")
-                        st.write(f"**完成时间:** {step.get('completed_at', '未完成')}")
-                        if step.get('error_message'):
-                            st.error(f"**错误:** {step['error_message']}")
-        else:
-            log_placeholder.info("暂无步骤信息，等待任务启动...")
+        # Render WebSocket log viewer
+        render_websocket_logs(ws_logs_placeholder, log_task_id, API_BASE, auto_refresh)
 
 
 # ========== TASK LIST VIEW ==========
@@ -634,9 +974,11 @@ else:
 
                     with col_actions:
                         # Horizontal button layout with spacing
+                        action_col1, action_col2, action_col3 = st.columns([1, 1, 1])
+
                         if st.session_state.get(f"confirm_delete_{task['id']}", False):
                             # Show confirm/cancel when delete is pending
-                            c1, c2 = st.columns([1, 1])
+                            c1, c2, c3 = st.columns([1, 1, 1])
                             with c1:
                                 if st.button("✓", key=f"confirm_{task['id']}", type="primary", help="确认删除", use_container_width=True):
                                     response = requests.delete(f"{API_BASE}/api/workflow/tasks/{task['id']}")
@@ -647,14 +989,42 @@ else:
                                 if st.button("✕", key=f"cancel_{task['id']}", help="取消", use_container_width=True):
                                     del st.session_state[f"confirm_delete_{task['id']}"]
                                     st.rerun()
+                            with c3:
+                                st.write("")
                         else:
-                            # Normal action buttons - horizontal with gap
-                            bc1, bc2 = st.columns([1.5, 1])
-                            with bc1:
+                            # Normal action buttons
+                            task_status = task.get('status', '').lower()
+
+                            # Config button - always available
+                            with action_col1:
                                 if st.button("配置", key=f"config_{task['id']}", help="配置并运行任务", use_container_width=True):
                                     st.query_params["task_id"] = task['id']
                                     st.rerun()
-                            with bc2:
+
+                            # Retry button - for failed or cancelled tasks
+                            with action_col2:
+                                if task_status in ['failed', 'cancelled']:
+                                    if st.button("重试", key=f"retry_{task['id']}", help="重新执行任务", use_container_width=True):
+                                        response = requests.post(f"{API_BASE}/api/workflow/tasks/{task['id']}/retry")
+                                        if response.status_code == 200:
+                                            st.success(f"任务 {task['id']} 已重新启动")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"重试失败: {response.text}")
+                                elif task_status == 'running':
+                                    # Cancel button for running tasks
+                                    if st.button("取消", key=f"cancel_run_{task['id']}", help="取消运行中的任务", use_container_width=True):
+                                        response = requests.post(f"{API_BASE}/api/workflow/tasks/{task['id']}/cancel")
+                                        if response.status_code == 200:
+                                            st.info(f"任务 {task['id']} 取消请求已发送")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"取消失败: {response.text}")
+                                else:
+                                    st.write("")
+
+                            # Delete button
+                            with action_col3:
                                 if st.button("🗑", key=f"delete_{task['id']}", help="删除任务", use_container_width=True):
                                     st.session_state[f"confirm_delete_{task['id']}"] = True
                                     st.rerun()
