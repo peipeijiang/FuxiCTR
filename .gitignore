@@ -112,7 +112,8 @@ checkpoints
 
 # Data directory
 data/
-processed_data/
+# Ignore processed_data contents but keep the directory
+processed_data/*
 
 # Ignore all files starting with .
 .*
