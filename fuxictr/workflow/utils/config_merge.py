@@ -164,7 +164,8 @@ def create_merged_config(
     label_col: list,
     task_id: int,
     dataset_id: Optional[str] = None,
-    model_root: Optional[str] = None
+    model_root: Optional[str] = None,
+    processed_root: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Create merged config by replacing only data paths and features.
@@ -176,6 +177,7 @@ def create_merged_config(
     - label_col → user-configured label_col (from dataset_config.yaml)
     - dataset_id → exp_id.timestamp (for FuxiCTR to create correct subdirectories)
     - model_root → model_zoo/{model}/checkpoints/
+    - processed_root → processed data output root (optional, for separating raw/processed data)
 
     Args:
         original_config: Original experiment config
@@ -188,6 +190,7 @@ def create_merged_config(
         task_id: Task ID for temp config naming
         dataset_id: Dataset ID (exp_id.timestamp) for FuxiCTR
         model_root: Model root directory (model_zoo/{model}/checkpoints/)
+        processed_root: Processed data output root (optional, defaults to data_root)
 
     Returns:
         Merged configuration dictionary
@@ -211,6 +214,10 @@ def create_merged_config(
     # Set model_root for FuxiCTR
     if model_root:
         merged["model_root"] = model_root
+
+    # Set processed_root for FeatureProcessor output (optional)
+    if processed_root:
+        merged["processed_root"] = processed_root
 
     # Mark as workflow-generated config
     merged["_workflow_generated"] = True
@@ -267,7 +274,8 @@ def prepare_training_config(
     label_col: list,
     task_id: int,
     dataset_id: Optional[str] = None,
-    model_root: Optional[str] = None
+    model_root: Optional[str] = None,
+    processed_root: Optional[str] = None
 ) -> tuple:
     """
     Complete workflow to prepare training config.
@@ -291,6 +299,7 @@ def prepare_training_config(
         task_id: Task ID
         dataset_id: Dataset ID (exp_id.timestamp) for FuxiCTR
         model_root: Model root directory (model_zoo/{model}/checkpoints/)
+        processed_root: Processed data output root (optional, for separating raw/processed data)
 
     Returns:
         Tuple of (config_path, merged_config, original_config_path)
@@ -344,7 +353,8 @@ def prepare_training_config(
         label_col=label_col,
         task_id=task_id,
         dataset_id=dataset_id,  # Pass dataset_id for FuxiCTR
-        model_root=model_root    # Pass model_root for FuxiCTR
+        model_root=model_root,  # Pass model_root for FuxiCTR
+        processed_root=processed_root  # Pass processed_root for FeatureProcessor
     )
 
     # Log what's being replaced

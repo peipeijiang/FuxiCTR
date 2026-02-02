@@ -38,11 +38,32 @@ class FeatureProcessor(object):
     def __init__(self,
                  feature_cols=[],
                  label_col=[],
-                 dataset_id=None, 
+                 dataset_id=None,
                  data_root="../data/",
+                 processed_root=None,
                  **kwargs):
         logging.info("Set up feature processor...")
-        self.data_dir = os.path.join(data_root, dataset_id)
+        # 如果未指定 processed_root，尝试从配置读取
+        if processed_root is None:
+            try:
+                from fuxictr.workflow.utils.path_manager import PathManager
+                config_path = "fuxictr/workflow/config.yaml"
+                if os.path.exists(config_path):
+                    import yaml
+                    with open(config_path, 'r') as f:
+                        config = yaml.safe_load(f)
+                        pm = PathManager(config)
+                        processed_root = pm.dashboard_processed_root
+                        logging.info(f"Using processed_root from config: {processed_root}")
+            except Exception as e:
+                logging.debug(f"Failed to load processed_root from config: {e}, falling back to data_root")
+
+        # 回退到 data_root（向后兼容）
+        if processed_root is None:
+            processed_root = data_root
+
+        # 使用 processed_root 作为输出目录
+        self.data_dir = os.path.join(processed_root, dataset_id)
         self.pickle_file = os.path.join(self.data_dir, "feature_processor.pkl")
         self.json_file = os.path.join(self.data_dir, "feature_map.json")
         self.vocab_file = os.path.join(self.data_dir, "feature_vocab.json")
@@ -52,7 +73,7 @@ class FeatureProcessor(object):
         self.feature_map.labels = [col["name"] for col in self.label_cols]
         self.feature_map.group_id = kwargs.get("group_id", None)
         self.dtype_dict = dict(
-            (feat["name"], eval(feat["dtype"]) if type(feat["dtype"]) == str else feat["dtype"]) 
+            (feat["name"], eval(feat["dtype"]) if type(feat["dtype"]) == str else feat["dtype"])
             for feat in self.feature_cols + self.label_cols
         )
         self.processor_dict = dict()

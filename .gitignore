@@ -112,6 +112,7 @@ checkpoints
 
 # Data directory
 data/
+processed_data/
 
 # Ignore all files starting with .
 .*

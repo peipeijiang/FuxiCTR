@@ -22,17 +22,41 @@ servers:
     key_path: "~/.ssh/id_rsa"        # TODO: SSH私钥路径
 
 # ----------------------------------------------------------------------------
-# 存储路径配置
+# 存储路径配置（v2.0 - Dashboard 与 Workflow 分离架构）
 # ----------------------------------------------------------------------------
 storage:
   # Server 21上的临时存储目录（SQL导出的parquet文件）
   server_21_staging: "/tmp/fuxictr_staging"
 
-  # Server 142上的staging目录（从Server 21传输过来的数据）
-  staging_dir: "/data/fuxictr/staging"
+  # ========== Dashboard 路径 ==========
+  # Dashboard 原始数据目录（用户手动上传）
+  dashboard_data_root: "../../../data/"
 
-  # 模型checkpoint目录
-  checkpoint_dir: "/data/fuxictr/checkpoints"
+  # Dashboard 处理后数据目录（build_dataset 生成）
+  dashboard_processed_root: "../../../processed_data/"
+
+  # Dashboard 模型目录（与 Workflow 分离）
+  dashboard_model_root: "../../../model_zoo/"
+
+  # Dashboard 日志目录
+  dashboard_log_dir: "../../../dashboard/logs/"
+
+  # ========== Workflow 路径 ==========
+  # Workflow 原始数据目录（从 Server 21 传输）
+  workflow_datasets_root: "./workflow_data/datasets/"
+
+  # Workflow 处理后数据目录（build_dataset 生成）
+  workflow_processed_root: "./workflow_data/processed/"
+
+  # Workflow 模型目录（与 Dashboard 分离）
+  workflow_model_root: "./workflow_models/"
+
+  # Workflow 日志目录（按任务和阶段组织）
+  workflow_log_root: "./workflow_logs/"
+
+  # ========== 通用路径 ==========
+  # 数据库备份目录
+  db_backup_dir: "./db_backup/"
 
 # ----------------------------------------------------------------------------
 # FuxiCTR 框架路径配置

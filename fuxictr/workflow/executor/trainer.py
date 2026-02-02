@@ -179,7 +179,8 @@ class TrainingExecutor(BaseExecutor):
                     label_col=label_col,  # User-configured
                     task_id=task_id,
                     dataset_id=dataset_id,  # Pass for FuxiCTR subdirectory creation
-                    model_root=model_root    # Pass model_root for FuxiCTR
+                    model_root=model_root,  # Pass model_root for FuxiCTR
+                    processed_root=data_root  # Pass processed_root (same as data_root for workflow)
                 )
 
                 self.logger.log(

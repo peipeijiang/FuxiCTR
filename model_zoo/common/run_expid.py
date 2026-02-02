@@ -178,10 +178,9 @@ def run_train(model, feature_map, params, args):
             os.makedirs(results_dir, exist_ok=True)
             csv_path = os.path.join(results_dir, f"{model_name}_workflow_results.csv")
         else:
-            # Dashboard 模式：生成在模型目录下（原有逻辑）
+            # Dashboard 模式：追加到 config.csv
             config_dir = os.path.dirname(args.get('config', '.'))
-            result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
-            csv_path = os.path.join(config_dir, "..", result_filename)
+            csv_path = os.path.join(config_dir, "config.csv")  # 固定为 config.csv
 
         # 写入 CSV
         with open(csv_path, 'a+') as fw:
@@ -247,8 +246,13 @@ def run_inference(model, feature_map, params, args):
 
     model.load_weights(model.checkpoint)
 
-    data_dir = os.path.join(params['data_root'], params['dataset_id'])
-    feature_encoder = FeatureProcessor(**params).load_pickle(
+    # 从 params 获取 processed_root，如果不存在则使用 data_root
+    processed_root = params.get('processed_root', params['data_root'])
+    data_dir = os.path.join(processed_root, params['dataset_id'])
+    # 将 processed_root 传递给 FeatureProcessor
+    params_with_processed = params.copy()
+    params_with_processed['processed_root'] = processed_root
+    feature_encoder = FeatureProcessor(**params_with_processed).load_pickle(
         params.get('pickle_file', os.path.join(data_dir, "feature_processor.pkl"))
     )
     feature_encoder.dtype_dict.update({'phone': str, 'phone_md5': str})
@@ -693,13 +697,18 @@ if __name__ == '__main__':
     seed_everything(seed=params['seed'])
 
     # Load feature_map
-    data_dir = os.path.join(params['data_root'], params['dataset_id'])
+    # 从 params 获取 processed_root，如果不存在则使用 data_root
+    processed_root = params.get('processed_root', params['data_root'])
+    data_dir = os.path.join(processed_root, params['dataset_id'])
     feature_map_json = os.path.join(data_dir, "feature_map.json")
     if params["data_format"] == "parquet" and args['mode'] == 'train':
         data_splits = (None, None, None)
         if rank == 0:
-            feature_encoder = FeatureProcessor(**params)
-            data_splits = build_dataset(feature_encoder, **params)
+            # 将 processed_root 传递给 FeatureProcessor
+            params_with_processed = params.copy()
+            params_with_processed['processed_root'] = processed_root
+            feature_encoder = FeatureProcessor(**params_with_processed)
+            data_splits = build_dataset(feature_encoder, **params_with_processed)
         if distributed and dist.is_initialized():
             shared = [data_splits]
             dist.broadcast_object_list(shared, src=0)

@@ -210,6 +210,7 @@ class BaseModel(nn.Module):
     def fit(self, data_generator, epochs=1, validation_data=None,
             max_gradient_norm=10., **kwargs):
         self.valid_gen = validation_data
+        self._train_gen = data_generator  # 保存训练数据生成器用于评估
         self._max_gradient_norm = max_gradient_norm
         self._best_metric = np.inf if self._monitor_mode == "min" else -np.inf
         self._stopping_steps = 0
@@ -220,7 +221,7 @@ class BaseModel(nn.Module):
         self._epoch_index = 0
         if self._eval_steps is None:
             self._eval_steps = self._steps_per_epoch
-        
+
         self._log("Start training: {} batches/epoch".format(self._steps_per_epoch))
         self._log("************ Epoch=1 start ************")
         for epoch in range(epochs):
@@ -229,6 +230,8 @@ class BaseModel(nn.Module):
             if self._stop_training:
                 break
             else:
+                # 每个 epoch 结束后评估训练集和验证集指标
+                self._evaluate_epoch_end()
                 self._log("************ Epoch={} end ************".format(self._epoch_index + 1))
         self._log("Training finished.")
         self._distributed_barrier()
@@ -266,6 +269,31 @@ class BaseModel(nn.Module):
         self.checkpoint_and_earlystop(val_logs)
         self._sync_training_state()
         self.train()
+
+    def _evaluate_epoch_end(self):
+        """在每个 epoch 结束后评估训练集和验证集指标"""
+        self._log('Evaluation @epoch {} end:'.format(self._epoch_index + 1))
+
+        # 评估训练集指标
+        train_logs = self.evaluate(self._train_gen, metrics=self._monitor.get_metrics())
+        self._log("Train metrics: " + print_to_list(train_logs))
+
+        # 评估验证集指标
+        val_logs = self.evaluate(self.valid_gen, metrics=self._monitor.get_metrics())
+        self._log("Validation metrics: " + print_to_list(val_logs))
+
+        # 使用验证集指标进行 checkpoint 和 early stopping
+        self.checkpoint_and_earlystop(val_logs)
+        self._sync_training_state()
+
+        # 记录到 TensorBoard
+        if self.writer:
+            for metric_name, metric_value in train_logs.items():
+                self.writer.add_scalar(f'epoch_train/{metric_name}', metric_value, self._epoch_index)
+            for metric_name, metric_value in val_logs.items():
+                self.writer.add_scalar(f'epoch_val/{metric_name}', metric_value, self._epoch_index)
+
+        self.train()  # 恢复训练模式
 
     def train_step(self, batch_data):
         self.optimizer.zero_grad()
