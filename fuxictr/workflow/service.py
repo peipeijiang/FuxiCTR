@@ -243,7 +243,18 @@ async def create_task(req: TaskCreateRequest, background_tasks: BackgroundTasks)
     # Get created task
     task = db.get_task(task_id)
 
-    return TaskResponse(**task)
+    return TaskResponse(**_convert_task_for_response(task))
+
+
+def _convert_task_for_response(task: Dict) -> Dict:
+    """Convert database task record to TaskResponse format."""
+    if not task:
+        return task
+    # Create a copy to avoid modifying the original
+    result = dict(task)
+    # Map database 'id' to response 'task_id'
+    result['task_id'] = result.pop('id', None)
+    return result
 
 
 @app.get("/api/workflow/tasks", response_model=List[TaskResponse])
@@ -261,7 +272,7 @@ async def list_tasks(
     - limit: Maximum number of tasks to return (default: 100)
     """
     tasks = db.get_all_tasks(user=user, status=status, limit=limit)
-    return [TaskResponse(**task) for task in tasks]
+    return [TaskResponse(**_convert_task_for_response(task)) for task in tasks]
 
 
 @app.get("/api/workflow/tasks/{task_id}", response_model=TaskResponse)
@@ -270,7 +281,7 @@ async def get_task(task_id: int):
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return TaskResponse(**task)
+    return TaskResponse(**_convert_task_for_response(task))
 
 
 @app.get("/api/workflow/tasks/{task_id}/steps", response_model=List[StepResponse])

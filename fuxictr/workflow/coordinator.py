@@ -37,11 +37,9 @@ from fuxictr.workflow.models import (
 )
 from fuxictr.workflow.utils.logger import WorkflowLogger
 from fuxictr.workflow.utils.ssh_transfer import SSHTransferManager
-from fuxictr.workflow.executor.data_fetch import DataFetchExecutor
+from fuxictr.workflow.executor.data_fetcher import DataFetchExecutor
 from fuxictr.workflow.executor.trainer import TrainingExecutor
-from fuxictr.workflow.executor.inference import InferenceExecutor
-from fuxictr.workflow.executor.transport import TransportExecutor
-from fuxictr.workflow.executor.monitor import MonitorExecutor
+from fuxictr.workflow.executor.inference import InferenceExecutor, TransportExecutor, MonitorExecutor
 
 
 logger = logging.getLogger(__name__)

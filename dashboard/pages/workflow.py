@@ -8,6 +8,475 @@ import time
 
 API_BASE = "http://localhost:8001"
 
+# Load CSS styles
+def load_css():
+    """Load modern flat design CSS styles."""
+    css_content = """
+    <style>
+    /* Modern Flat Design System */
+    :root {
+        --primary: #3b82f6;
+        --primary-hover: #2563eb;
+        --primary-light: #dbeafe;
+        --success: #10b981;
+        --success-light: #d1fae5;
+        --warning: #f59e0b;
+        --warning-light: #fef3c7;
+        --danger: #ef4444;
+        --danger-light: #fee2e2;
+        --gray-50: #f8fafc;
+        --gray-100: #f1f5f9;
+        --gray-200: #e2e8f0;
+        --gray-300: #cbd5e1;
+        --gray-400: #94a3b8;
+        --gray-500: #64748b;
+        --gray-600: #475569;
+        --gray-700: #334155;
+        --gray-800: #1e293b;
+        --gray-900: #0f172a;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        --radius-sm: 6px;
+        --radius: 8px;
+        --radius-md: 10px;
+        --radius-lg: 12px;
+    }
+
+    /* Global Typography */
+    .stApp {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        background: var(--gray-50);
+    }
+
+    /* Section Header */
+    .section-header {
+        padding: 20px 0;
+        border-bottom: 1px solid var(--gray-200);
+        margin-bottom: 24px;
+    }
+
+    /* Stats Bar */
+    .stats-bar {
+        display: flex;
+        gap: 16px;
+        margin-bottom: 20px;
+        padding: 16px 20px;
+        background: white;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--gray-200);
+        box-shadow: var(--shadow-sm);
+    }
+
+    .stat-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        background: var(--gray-50);
+        border-radius: var(--radius);
+        border: 1px solid var(--gray-200);
+    }
+
+    .stat-value {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--gray-900);
+    }
+
+    .stat-label {
+        font-size: 13px;
+        color: var(--gray-500);
+        font-weight: 500;
+    }
+
+    /* Task Card */
+    .task-card {
+        background: white;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--gray-200);
+        padding: 20px;
+        margin-bottom: 16px;
+        box-shadow: var(--shadow-sm);
+        transition: all 0.2s ease;
+    }
+
+    .task-card:hover {
+        box-shadow: var(--shadow-md);
+        border-color: var(--gray-300);
+        transform: translateY(-1px);
+    }
+
+    .task-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 16px;
+    }
+
+    .task-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--gray-900);
+        margin: 0;
+    }
+
+    .task-meta {
+        font-size: 13px;
+        color: var(--gray-500);
+        margin-top: 4px;
+    }
+
+    /* Status Badge */
+    .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.025em;
+    }
+
+    .status-badge.pending {
+        background: var(--gray-100);
+        color: var(--gray-600);
+    }
+
+    .status-badge.running {
+        background: var(--primary-light);
+        color: var(--primary);
+        animation: pulse 2s infinite;
+    }
+
+    .status-badge.completed {
+        background: var(--success-light);
+        color: var(--success);
+    }
+
+    .status-badge.failed {
+        background: var(--danger-light);
+        color: var(--danger);
+    }
+
+    .status-badge.cancelled {
+        background: var(--warning-light);
+        color: var(--warning);
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.7; }
+    }
+
+    /* Progress Bar */
+    .progress-container {
+        margin: 16px 0;
+    }
+
+    .progress-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .progress-label {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--gray-600);
+    }
+
+    .progress-value {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--gray-900);
+    }
+
+    .progress-bar {
+        height: 8px;
+        background: var(--gray-200);
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--primary) 0%, #60a5fa 100%);
+        border-radius: 4px;
+        transition: width 0.3s ease;
+    }
+
+    .progress-fill.success {
+        background: linear-gradient(90deg, var(--success) 0%, #34d399 100%);
+    }
+
+    .progress-fill.error {
+        background: linear-gradient(90deg, var(--danger) 0%, #f87171 100%);
+    }
+
+    /* Step Indicator */
+    .step-indicator {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 16px 0;
+        padding: 16px;
+        background: var(--gray-50);
+        border-radius: var(--radius);
+        border: 1px solid var(--gray-200);
+    }
+
+    .step-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--gray-500);
+    }
+
+    .step-item.active {
+        color: var(--primary);
+    }
+
+    .step-item.completed {
+        color: var(--success);
+    }
+
+    .step-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--gray-300);
+    }
+
+    .step-item.active .step-dot {
+        background: var(--primary);
+        box-shadow: 0 0 0 3px var(--primary-light);
+    }
+
+    .step-item.completed .step-dot {
+        background: var(--success);
+    }
+
+    /* Action Buttons */
+    .action-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 8px 16px;
+        border-radius: var(--radius);
+        font-size: 13px;
+        font-weight: 500;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .action-btn:hover {
+        transform: translateY(-1px);
+    }
+
+    .action-btn.primary {
+        background: var(--primary);
+        color: white;
+    }
+
+    .action-btn.primary:hover {
+        background: var(--primary-hover);
+        box-shadow: var(--shadow-md);
+    }
+
+    .action-btn.secondary {
+        background: white;
+        color: var(--gray-700);
+        border-color: var(--gray-300);
+    }
+
+    .action-btn.secondary:hover {
+        background: var(--gray-50);
+        border-color: var(--gray-400);
+    }
+
+    .action-btn.danger {
+        background: white;
+        color: var(--danger);
+        border-color: var(--danger-light);
+    }
+
+    .action-btn.danger:hover {
+        background: var(--danger-light);
+    }
+
+    .action-btn.ghost {
+        background: transparent;
+        color: var(--gray-500);
+    }
+
+    .action-btn.ghost:hover {
+        background: var(--gray-100);
+        color: var(--gray-700);
+    }
+
+    /* Modal/Dialog */
+    .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(15, 23, 42, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        backdrop-filter: blur(4px);
+    }
+
+    .modal-content {
+        background: white;
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-lg);
+        max-width: 800px;
+        width: 90%;
+        max-height: 90vh;
+        overflow: hidden;
+        animation: modalSlideIn 0.2s ease;
+    }
+
+    @keyframes modalSlideIn {
+        from {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .modal-header {
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--gray-200);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .modal-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--gray-900);
+        margin: 0;
+    }
+
+    .modal-body {
+        padding: 24px;
+        overflow-y: auto;
+        max-height: calc(90vh - 140px);
+    }
+
+    .modal-footer {
+        padding: 16px 24px;
+        border-top: 1px solid var(--gray-200);
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        background: var(--gray-50);
+    }
+
+    /* Form Styles */
+    .form-group {
+        margin-bottom: 20px;
+    }
+
+    .form-label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--gray-700);
+        margin-bottom: 6px;
+    }
+
+    .form-hint {
+        font-size: 12px;
+        color: var(--gray-500);
+        margin-top: 4px;
+    }
+
+    .form-section {
+        margin-bottom: 24px;
+        padding: 20px;
+        background: var(--gray-50);
+        border-radius: var(--radius);
+        border: 1px solid var(--gray-200);
+    }
+
+    .form-section-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--gray-800);
+        margin: 0 0 16px 0;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--gray-200);
+    }
+
+    /* Log Panel */
+    .log-panel {
+        background: var(--gray-900);
+        border-radius: var(--radius);
+        padding: 16px;
+        font-family: 'SF Mono', Monaco, monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #e2e8f0;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+
+    .log-entry {
+        padding: 2px 0;
+        border-left: 2px solid transparent;
+        padding-left: 8px;
+        margin: 2px 0;
+    }
+
+    .log-entry.info {
+        border-left-color: var(--primary);
+    }
+
+    .log-entry.success {
+        border-left-color: var(--success);
+    }
+
+    .log-entry.error {
+        border-left-color: var(--danger);
+    }
+
+    .log-entry.warning {
+        border-left-color: var(--warning);
+    }
+
+    .log-timestamp {
+        color: var(--gray-500);
+        margin-right: 8px;
+    }
+
+    /* Hide Streamlit default elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display: none;}
+    </style>
+    """
+    st.markdown(css_content, unsafe_allow_html=True)
+
+load_css()
+
 # Paths
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 USER_CONFIG_DIR = os.path.join(ROOT_DIR, "dashboard", "user_configs")
@@ -223,7 +692,17 @@ span[class*="status-running"]::before {
 query_params = st.query_params
 task_id = query_params.get("task_id", None)
 
-st.title("全流程管理")
+# Page Header with Modern Design
+st.markdown("""
+    <div style="padding: 20px 0; border-bottom: 1px solid #e2e8f0; margin-bottom: 24px;">
+        <h1 style="font-size: 24px; font-weight: 600; color: #0f172a; margin: 0;">
+            全流程管理
+        </h1>
+        <p style="font-size: 14px; color: #64748b; margin: 4px 0 0 0;">
+            管理模型训练、推理和数据传输任务
+        </p>
+    </div>
+""", unsafe_allow_html=True)
 
 
 def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: bool = True):
@@ -848,15 +1327,45 @@ if task_id:
 
 # ========== TASK LIST VIEW ==========
 else:
+    # Fetch tasks for stats
+    stats_response = requests.get(f"{API_BASE}/api/workflow/tasks")
+    all_tasks = stats_response.json() if stats_response.status_code == 200 else []
+    running_count = sum(1 for t in all_tasks if t.get('status') == 'running')
+    pending_count = sum(1 for t in all_tasks if t.get('status') == 'pending')
+    completed_count = sum(1 for t in all_tasks if t.get('status') == 'completed')
+    failed_count = sum(1 for t in all_tasks if t.get('status') == 'failed')
+
+    # Stats Bar
+    st.markdown(f"""
+        <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+            <div style="flex: 1; padding: 16px; background: white; border-radius: 10px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <div style="font-size: 24px; font-weight: 700; color: #3b82f6;">{running_count}</div>
+                <div style="font-size: 12px; color: #64748b; font-weight: 500;">运行中</div>
+            </div>
+            <div style="flex: 1; padding: 16px; background: white; border-radius: 10px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <div style="font-size: 24px; font-weight: 700; color: #f59e0b;">{pending_count}</div>
+                <div style="font-size: 12px; color: #64748b; font-weight: 500;">待处理</div>
+            </div>
+            <div style="flex: 1; padding: 16px; background: white; border-radius: 10px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <div style="font-size: 24px; font-weight: 700; color: #10b981;">{completed_count}</div>
+                <div style="font-size: 12px; color: #64748b; font-weight: 500;">已完成</div>
+            </div>
+            <div style="flex: 1; padding: 16px; background: white; border-radius: 10px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <div style="font-size: 24px; font-weight: 700; color: #ef4444;">{failed_count}</div>
+                <div style="font-size: 12px; color: #64748b; font-weight: 500;">失败</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
     # Header with create button
     col_header, col_create = st.columns([5, 1])
 
     with col_header:
-        st.markdown('<h2 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0;">任务列表</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 style="font-size: 18px; font-weight: 600; color: #0f172a; margin: 0;">任务列表</h2>', unsafe_allow_html=True)
 
     with col_create:
         st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
-        if st.button("+ 新建", key="create_task_btn", type="primary", use_container_width=True):
+        if st.button("+ 新建任务", key="create_task_btn", type="primary", use_container_width=True):
             st.session_state["show_create_form"] = not st.session_state.get("show_create_form", False)
             st.rerun()
 
@@ -976,18 +1485,18 @@ else:
                         # Horizontal button layout with spacing
                         action_col1, action_col2, action_col3 = st.columns([1, 1, 1])
 
-                        if st.session_state.get(f"confirm_delete_{task['id']}", False):
+                        if st.session_state.get(f"confirm_delete_{task['task_id']}", False):
                             # Show confirm/cancel when delete is pending
                             c1, c2, c3 = st.columns([1, 1, 1])
                             with c1:
-                                if st.button("✓", key=f"confirm_{task['id']}", type="primary", help="确认删除", use_container_width=True):
-                                    response = requests.delete(f"{API_BASE}/api/workflow/tasks/{task['id']}")
+                                if st.button("✓", key=f"confirm_{task['task_id']}", type="primary", help="确认删除", use_container_width=True):
+                                    response = requests.delete(f"{API_BASE}/api/workflow/tasks/{task['task_id']}")
                                     if response.status_code == 200:
-                                        del st.session_state[f"confirm_delete_{task['id']}"]
+                                        del st.session_state[f"confirm_delete_{task['task_id']}"]
                                         st.rerun()
                             with c2:
-                                if st.button("✕", key=f"cancel_{task['id']}", help="取消", use_container_width=True):
-                                    del st.session_state[f"confirm_delete_{task['id']}"]
+                                if st.button("✕", key=f"cancel_{task['task_id']}", help="取消", use_container_width=True):
+                                    del st.session_state[f"confirm_delete_{task['task_id']}"]
                                     st.rerun()
                             with c3:
                                 st.write("")
@@ -997,26 +1506,26 @@ else:
 
                             # Config button - always available
                             with action_col1:
-                                if st.button("配置", key=f"config_{task['id']}", help="配置并运行任务", use_container_width=True):
-                                    st.query_params["task_id"] = task['id']
+                                if st.button("配置", key=f"config_{task['task_id']}", help="配置并运行任务", use_container_width=True):
+                                    st.query_params["task_id"] = task['task_id']
                                     st.rerun()
 
                             # Retry button - for failed or cancelled tasks
                             with action_col2:
                                 if task_status in ['failed', 'cancelled']:
-                                    if st.button("重试", key=f"retry_{task['id']}", help="重新执行任务", use_container_width=True):
-                                        response = requests.post(f"{API_BASE}/api/workflow/tasks/{task['id']}/retry")
+                                    if st.button("重试", key=f"retry_{task['task_id']}", help="重新执行任务", use_container_width=True):
+                                        response = requests.post(f"{API_BASE}/api/workflow/tasks/{task['task_id']}/retry")
                                         if response.status_code == 200:
-                                            st.success(f"任务 {task['id']} 已重新启动")
+                                            st.success(f"任务 {task['task_id']} 已重新启动")
                                             st.rerun()
                                         else:
                                             st.error(f"重试失败: {response.text}")
                                 elif task_status == 'running':
                                     # Cancel button for running tasks
-                                    if st.button("取消", key=f"cancel_run_{task['id']}", help="取消运行中的任务", use_container_width=True):
-                                        response = requests.post(f"{API_BASE}/api/workflow/tasks/{task['id']}/cancel")
+                                    if st.button("取消", key=f"cancel_run_{task['task_id']}", help="取消运行中的任务", use_container_width=True):
+                                        response = requests.post(f"{API_BASE}/api/workflow/tasks/{task['task_id']}/cancel")
                                         if response.status_code == 200:
-                                            st.info(f"任务 {task['id']} 取消请求已发送")
+                                            st.info(f"任务 {task['task_id']} 取消请求已发送")
                                             st.rerun()
                                         else:
                                             st.error(f"取消失败: {response.text}")
@@ -1025,8 +1534,8 @@ else:
 
                             # Delete button
                             with action_col3:
-                                if st.button("🗑", key=f"delete_{task['id']}", help="删除任务", use_container_width=True):
-                                    st.session_state[f"confirm_delete_{task['id']}"] = True
+                                if st.button("🗑", key=f"delete_{task['task_id']}", help="删除任务", use_container_width=True):
+                                    st.session_state[f"confirm_delete_{task['task_id']}"] = True
                                     st.rerun()
 
                     # Divider
