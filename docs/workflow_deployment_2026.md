@@ -345,7 +345,6 @@ fuxictr/                                    # 项目根目录
 ├── dashboard/
 │   ├── logs/                              # Dashboard 应用和训练日志副本
 │   │   ├── streamlit.log                  # Streamlit 应用日志
-│   │   ├── sse_server.log                 # SSE Server 日志
 │   │   ├── users/                         # 用户训练日志副本（可选）
 │   │   │   ├── yeshao.log
 │   │   │   └── gxwang9.log
