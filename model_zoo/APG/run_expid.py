@@ -80,9 +80,22 @@ def get_completed_files(output_dir):
     return completed_files
 
 
-def run_train(model, feature_map, params, args):
+def run_train(model, feature_map, params, args, workflow_logger=None):
+    \"\"\"Training function.
+
+    Args:
+        model: Model instance for training
+        feature_map: Feature map for data processing
+        params: Parameters dictionary
+        args: Arguments dictionary
+        workflow_logger: Optional WorkflowLogger for Dashboard WebSocket broadcasting
+    \"\"\"
     rank = params.get('distributed_rank', 0)
     train_gen, valid_gen = RankDataLoader(feature_map, stage='train', **params).make_iterator()
+
+    # Set workflow_logger on model if available
+    if workflow_logger:
+        model._workflow_logger = workflow_logger
     model.fit(train_gen, validation_data=valid_gen, **params)
 
     if rank == 0:
@@ -107,7 +120,16 @@ def run_train(model, feature_map, params, args):
                         "N.A.", print_to_list(valid_result), print_to_list(test_result)))
 
 
-def run_inference(model, feature_map, params, args):
+def run_inference(model, feature_map, params, args, workflow_logger=None):
+    \"\"\"Inference function.
+
+    Args:
+        model: Model instance for inference
+        feature_map: Feature map for data processing
+        params: Parameters dictionary
+        args: Arguments dictionary
+        workflow_logger: Optional WorkflowLogger for Dashboard WebSocket broadcasting
+    \"\"\"
     _install_signal_handlers()
     import torch.distributed as dist  # Import at function start for all ranks to use
     distributed = params.get('distributed', False)
@@ -744,10 +766,23 @@ if __name__ == '__main__':
     model = model_class(feature_map, **params)
     model.count_parameters() # print number of parameters used in model
 
+    # Initialize workflow_logger if in Dashboard mode
+    workflow_logger = None
+    if os.environ.get('FUXICTR_WORKFLOW_MODE') == 'dashboard':
+        try:
+            from fuxictr.workflow.utils.logger import get_workflow_logger
+            task_id = os.environ.get('FUXICTR_TASK_ID')
+            if task_id:
+                workflow_logger = get_workflow_logger(int(task_id))
+                if rank == 0:
+                    logging.info(f\"Workflow logger initialized for task {task_id}\")
+        except Exception as e:
+            logging.warning(f\"Failed to initialize workflow logger: {e}\")
+
     if args['mode'] == 'train':
-        run_train(model, feature_map, params, args)
+        run_train(model, feature_map, params, args, workflow_logger=workflow_logger)
     elif args['mode'] == 'inference':
-        run_inference(model, feature_map, params, args)
+        run_inference(model, feature_map, params, args, workflow_logger=workflow_logger)
 
     if distributed and dist.is_initialized():
         distributed_barrier()
