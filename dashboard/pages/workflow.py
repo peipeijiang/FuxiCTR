@@ -922,17 +922,6 @@ if task_id:
         task = response.json()
 
         # ========== HEADER ==========
-        # Status badge with improved style
-        task_status = task.get('status', 'unknown')
-        status_colors = {
-            'pending': ('#fef3c7', '#92400e', '待处理'),
-            'running': ('#dbeafe', '#1e40af', '运行中'),
-            'completed': ('#dcfce7', '#166534', '已完成'),
-            'failed': ('#fee2e2', '#991b1b', '失败'),
-            'cancelled': ('#f1f5f9', '#475569', '已取消')
-        }
-        bg_color, text_color, status_text = status_colors.get(task_status.lower(), ('#f1f5f9', '#475569', task_status.upper()))
-
         # Modern header design
         st.markdown(f"""
             <style>
@@ -1028,18 +1017,6 @@ if task_id:
                                 {task.get('user', '-')}
                             </div>''' if task.get('user') else ''}
                         </div>
-                    </div>
-                    <div style="flex-shrink: 0;">
-                        <div style="
-                            background: {bg_color};
-                            color: {text_color};
-                            padding: 12px 24px;
-                            border-radius: 12px;
-                            font-size: 15px;
-                            font-weight: 700;
-                            letter-spacing: 0.02em;
-                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                        ">{status_text}</div>
                     </div>
                 </div>
             </div>
