@@ -1288,26 +1288,13 @@ if task_id:
         st.markdown('</div>', unsafe_allow_html=True)
 
         # ========== LOGS SECTION ==========
-        st.markdown("""
-            <div style="
-                padding: 24px;
-                background: #1e293b;
-                border-radius: 12px;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            ">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                    <h3 style="font-size: 18px; font-weight: 600; color: #f8fafc; margin: 0;">
-                        实时日志
-                    </h3>
-                    <div style="display: flex; gap: 12px; align-items: center;">
-        """, unsafe_allow_html=True)
-
-        # Auto-refresh toggle
-        auto_refresh = st.checkbox("自动刷新", value=True, key=f"auto_refresh_{task_id}")
-        if st.button("刷新", key=f"refresh_{task_id}"):
-            st.rerun()
-
-        st.markdown("</div></div>", unsafe_allow_html=True)
+        # Auto-refresh toggle (in a toolbar above logs)
+        col_refresh, col_space, col_btn = st.columns([2, 6, 1])
+        with col_refresh:
+            auto_refresh = st.checkbox("自动刷新日志", value=True, key=f"auto_refresh_{task_id}")
+        with col_btn:
+            if st.button("刷新", key=f"refresh_{task_id}"):
+                st.rerun()
 
         # WebSocket Real-time Log Component
         ws_logs_placeholder = st.empty()
