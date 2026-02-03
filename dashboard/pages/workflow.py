@@ -979,47 +979,16 @@ if task_id:
                         </svg>
                         返回列表
                     </button>
-                    <h1 style="font-size: 24px; font-weight: 600; color: #0f172a; margin: 0;">
+                    <h1 style="font-size: 24px; font-weight: 600; color: #0f172a; margin: 0 0 4px 0;">
                         {task.get('name', '未命名任务')}
                     </h1>
+                    <div style="font-size: 13px; color: #64748b; margin-top: 4px;">
+                        创建于 {task.get('created_at', '')[:16] if task.get('created_at') else '-'}
+                    </div>
                 </div>
                 {render_status_badge(task.get('status', 'unknown'))}
             </div>
         """, unsafe_allow_html=True)
-
-        # ========== INFO CARDS ==========
-        st.markdown("""
-            <div style="
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 16px;
-                margin-bottom: 24px;
-            ">
-        """, unsafe_allow_html=True)
-
-        # Helper function for info cards
-        def render_info_card(label: str, value: str, icon: str = ""):
-            icon_html = f"<div style='font-size: 24px; margin-bottom: 8px;'>{icon}</div>" if icon else ""
-            return f"""
-                <div style="
-                    padding: 16px;
-                    background: white;
-                    border-radius: 10px;
-                    border: 1px solid #e2e8f0;
-                    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-                ">
-                    {icon_html}
-                    <div style="font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 4px;">{label}</div>
-                    <div style="font-size: 14px; color: #1e293b; font-weight: 600;">{value if value else '-'}</div>
-                </div>
-            """
-
-        st.markdown(render_info_card("创建时间", task.get('created_at', '')[:16] if task.get('created_at') else ''), unsafe_allow_html=True)
-        st.markdown(render_info_card("用户", task.get('user', '')), unsafe_allow_html=True)
-        st.markdown(render_info_card("模型", task.get('model', '')), unsafe_allow_html=True)
-        st.markdown(render_info_card("实验ID", task.get('experiment_id', '')), unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
 
         # ========== CONFIGURATION FORM ==========
         st.markdown("""
