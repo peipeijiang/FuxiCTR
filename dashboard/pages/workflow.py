@@ -942,7 +942,7 @@ if task_id:
         with col_title:
             st.markdown(f"""
                 <h1 style="font-size: 22px; font-weight: 600; color: #111827; margin: 0 0 8px 0;">
-                    {task['name']}
+                    {task.get('name', '未命名任务')}
                 </h1>
             """, unsafe_allow_html=True)
 
@@ -966,15 +966,15 @@ if task_id:
                 </div>
                 {f'''<div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 13px; color: #6b7280;">用户</span>
-                    <span style="font-size: 13px; color: #374151;">{task['user']}</span>
+                    <span style="font-size: 13px; color: #374151;">{task.get('user')}</span>
                 </div>''' if task.get('user') else ''}
                 {f'''<div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 13px; color: #6b7280;">模型</span>
-                    <span style="font-size: 13px; color: #374151;">{task['model']}</span>
+                    <span style="font-size: 13px; color: #374151;">{task.get('model')}</span>
                 </div>''' if task.get('model') else ''}
                 {f'''<div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 13px; color: #6b7280;">Exp ID</span>
-                    <span style="font-size: 13px; color: #374151;">{task['experiment_id']}</span>
+                    <span style="font-size: 13px; color: #374151;">{task.get('experiment_id')}</span>
                 </div>''' if task.get('experiment_id') else ''}
             </div>
         """, unsafe_allow_html=True)
@@ -1148,7 +1148,7 @@ if task_id:
             # User and Model selection - primary fields
             col1, col2 = st.columns(2)
             with col1:
-                default_user_idx = USER_OPTIONS.index(task['user']) if task['user'] in USER_OPTIONS else 0
+                default_user_idx = USER_OPTIONS.index(task.get('user')) if task.get('user') in USER_OPTIONS else 0
                 current_user = st.selectbox(
                     "用户名 *",
                     USER_OPTIONS,
@@ -1161,7 +1161,7 @@ if task_id:
             with col2:
                 user_config_dir = os.path.join(USER_CONFIG_DIR, current_user)
                 models = get_models(user_config_dir)
-                default_model_idx = models.index(task['model']) if task['model'] in models else 0
+                default_model_idx = models.index(task.get('model')) if task.get('model') in models else 0
                 selected_model = st.selectbox(
                     "选择模型 *",
                     models if models else ["无可用模型"],
@@ -1176,7 +1176,7 @@ if task_id:
             if models and selected_model != "无可用模型":
                 available_expids = get_experiment_ids(selected_model, current_user)
                 if available_expids:
-                    default_exp_idx = available_expids.index(task['experiment_id']) if task['experiment_id'] in available_expids else 0
+                    default_exp_idx = available_expids.index(task.get('experiment_id')) if task.get('experiment_id') in available_expids else 0
                     experiment_id = st.selectbox(
                         "Experiment ID *",
                         available_expids,
@@ -1187,14 +1187,14 @@ if task_id:
                 else:
                     experiment_id = st.text_input(
                         "Experiment ID *",
-                        value=task['experiment_id'] or selected_model.split('/')[-1] + "_test",
+                        value=task.get('experiment_id') or selected_model.split('/')[-1] + "_test",
                         key="detail_expid_input",
                         help="未找到预配置的实验ID，请手动输入"
                     )
             else:
                 experiment_id = st.text_input(
                     "Experiment ID *",
-                    value=task['experiment_id'] or "",
+                    value=task.get('experiment_id') or "",
                     key="detail_expid_input2",
                     help="请输入实验ID"
                 )
@@ -1219,7 +1219,7 @@ if task_id:
             with sql_col1:
                 sample_sql = st.text_area(
                     "样本数据 SQL",
-                    value=task['sample_sql'] or "",
+                    value=task.get('sample_sql') or "",
                     height=140,
                     key="detail_sample_sql",
                     help="从HDFS导出样本数据的SQL语句",
@@ -1229,7 +1229,7 @@ if task_id:
             with sql_col2:
                 infer_sql = st.text_area(
                     "推理数据 SQL",
-                    value=task['infer_sql'] or "",
+                    value=task.get('infer_sql') or "",
                     height=140,
                     key="detail_infer_sql",
                     help="从HDFS导出推理数据的SQL语句",
@@ -1256,7 +1256,7 @@ if task_id:
             with path_col1:
                 hdfs_path = st.text_input(
                     "HDFS 路径",
-                    value=task['hdfs_path'] or "/hdfs/data/",
+                    value=task.get('hdfs_path') or "/hdfs/data/",
                     key="detail_hdfs_path",
                     help="HDFS存储路径",
                     label_visibility="visible"
@@ -1264,7 +1264,7 @@ if task_id:
             with path_col2:
                 hive_table = st.text_input(
                     "Hive 表",
-                    value=task['hive_table'] or "hive.result",
+                    value=task.get('hive_table') or "hive.result",
                     key="detail_hive_table",
                     help="目标Hive表名",
                     label_visibility="visible"
@@ -1281,7 +1281,7 @@ if task_id:
                 # Update task via API (would need update endpoint)
                 # For now, we'll create a new task execution
                 payload = {
-                    "name": task['name'],
+                    "name": task.get('name'),
                     "user": current_user,
                     "model": selected_model,
                     "experiment_id": experiment_id,
@@ -1452,7 +1452,7 @@ else:
 
                     with col_name:
                         st.markdown(f"""
-                            <div style="font-weight: 600; font-size: 14px; color: #1f2937;">{task['name']}</div>
+                            <div style="font-weight: 600; font-size: 14px; color: #1f2937;">{task.get('name', '未命名任务')}</div>
                             <div style="font-size: 11px; color: #9ca3af; margin-top: 1px;">
                                 {task.get('user', '')} {f"/ {task.get('model', '')}" if task.get('model') else ''}
                             </div>
@@ -1478,7 +1478,7 @@ else:
                                     padding: 2px 8px;
                                     border-radius: 4px;
                                     text-align: center;
-                                ">{task['experiment_id']}</div>
+                                ">{task.get('experiment_id')}</div>
                             """, unsafe_allow_html=True)
 
                     with col_actions:
