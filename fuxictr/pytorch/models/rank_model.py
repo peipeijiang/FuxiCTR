@@ -36,19 +36,20 @@ from tqdm import tqdm
 
 
 class BaseModel(nn.Module):
-    def __init__(self, 
-                 feature_map, 
-                 model_id="BaseModel", 
-                 task="binary_classification", 
-                 gpu=-1, 
-                 monitor="AUC", 
-                 save_best_only=True, 
-                 monitor_mode="max", 
-                 early_stop_patience=2, 
-                 eval_steps=None, 
-                 embedding_regularizer=None, 
-                 net_regularizer=None, 
-                 reduce_lr_on_plateau=True, 
+    def __init__(self,
+                 feature_map,
+                 model_id="BaseModel",
+                 task="binary_classification",
+                 gpu=-1,
+                 monitor="AUC",
+                 save_best_only=True,
+                 monitor_mode="max",
+                 early_stop_patience=2,
+                 eval_steps=None,
+                 embedding_regularizer=None,
+                 net_regularizer=None,
+                 reduce_lr_on_plateau=True,
+                 workflow_logger=None,
                  **kwargs):
         super(BaseModel, self).__init__()
         self.device = get_device(gpu)
@@ -70,6 +71,7 @@ class BaseModel(nn.Module):
         self.task = task
         self.model_id = model_id
         self.model_dir = os.path.join(kwargs["model_root"], feature_map.dataset_id)
+        self._workflow_logger = workflow_logger  # WebSocket logger for Dashboard
 
         # 为每个实验创建独立文件夹（v2.0 架构）
         # 新结构: model_root/{dataset_id}/{exp_id}/{exp_id}.model
@@ -365,19 +367,46 @@ class BaseModel(nn.Module):
         train_main_loss = 0
         train_reg_loss = 0
         train_grad_norm = 0
-        
+
         self.train()
         if self._verbose == 0 or not self._is_master:
             batch_iterator = data_generator
         else:
-            batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout, leave=False) # Fix newline issue
+            # Use TqdmWebSocketAdapter if workflow_logger is available
+            if self._workflow_logger:
+                from fuxictr.pytorch.utils import create_progress_adapter
+                batch_iterator = create_progress_adapter(
+                    data_generator,
+                    logger=self._workflow_logger,
+                    step_name="train",
+                    rank=self._distributed_rank,
+                    world_size=self._distributed_world_size,
+                    enable_distributed=self._distributed,
+                    disable=False,
+                    file=sys.stdout,
+                    leave=False
+                )
+            else:
+                batch_iterator = tqdm(data_generator, disable=False, file=sys.stdout, leave=False)
         for batch_index, batch_data in enumerate(batch_iterator):
             self._batch_index = batch_index
             self._total_steps += 1
             loss, main_loss, reg_loss, grad_norm = self.train_step(batch_data)
-            
+
             if (self._verbose > 0 and self._is_master):
                 batch_iterator.set_postfix(loss=loss.item(), main=main_loss.item(), reg=reg_loss.item(), grad=grad_norm.item())
+
+            # Broadcast metrics to WebSocket periodically
+            if self._workflow_logger and batch_index % 10 == 0:
+                try:
+                    self._workflow_logger.metric(
+                        step="train",
+                        metric_name="batch_loss",
+                        value=loss.item(),
+                        unit=""
+                    )
+                except Exception:
+                    pass  # Silently fail to avoid disrupting training
 
             train_loss += loss.item()
             train_main_loss += main_loss.item()
@@ -414,7 +443,21 @@ class BaseModel(nn.Module):
             y_true = []
             group_id = []
             if self._verbose > 0 and self._is_master:
-                data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
+                # Use TqdmWebSocketAdapter if workflow_logger is available
+                if self._workflow_logger:
+                    from fuxictr.pytorch.utils import create_progress_adapter
+                    data_generator = create_progress_adapter(
+                        data_generator,
+                        logger=self._workflow_logger,
+                        step_name="evaluate",
+                        rank=self._distributed_rank,
+                        world_size=self._distributed_world_size,
+                        enable_distributed=self._distributed,
+                        disable=False,
+                        file=sys.stdout
+                    )
+                else:
+                    data_generator = tqdm(data_generator, disable=False, file=sys.stdout)
             for batch_data in data_generator:
                 return_dict = self.forward(batch_data)
                 pred = return_dict["y_pred"]
@@ -442,6 +485,18 @@ class BaseModel(nn.Module):
                 if self.writer:
                     for k, v in val_logs.items():
                         self.writer.add_scalar(f'val_{k}', v, self._total_steps)
+                # Broadcast metrics to WebSocket
+                if self._workflow_logger:
+                    try:
+                        for k, v in val_logs.items():
+                            self._workflow_logger.metric(
+                                step="evaluate",
+                                metric_name=k,
+                                value=v,
+                                unit=""
+                            )
+                    except Exception:
+                        pass  # Silently fail to avoid disrupting evaluation
             else:
                 val_logs = {}
             val_logs = self._broadcast_logs(val_logs)

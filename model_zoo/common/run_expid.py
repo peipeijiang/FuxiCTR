@@ -76,6 +76,7 @@ import threading
 import time
 import re
 import pyarrow.parquet as pq
+from tqdm import tqdm
 
 
 _stop_event = threading.Event()
@@ -122,7 +123,6 @@ def cleanup_task_state(pid=None):
 
 def cleanup_pytorch_tmp_files():
     """Clean up PyTorch DDP/RPC temporary files."""
-    import glob
     try:
         # Find tmp directories in model directory
         pattern = os.path.join(root_path, "model_zoo", "**", "tmp*", "_remote_module_non_scriptable.py")
@@ -148,10 +148,141 @@ def cleanup_pytorch_tmp_files():
         logging.warning(f"Failed to cleanup PyTorch tmp files: {e}")
 
 
-def run_train(model, feature_map, params, args):
-    """Training function."""
+# ========================================================================
+# 辅助函数 - 提取的公共逻辑
+# ========================================================================
+
+def _get_processed_root(params):
+    """获取 processed_root 参数，统一处理"""
+    return params.get('processed_root', params['data_root'])
+
+
+def _get_data_dir(params, processed_root=None):
+    """获取 data_dir，统一处理"""
+    if processed_root is None:
+        processed_root = _get_processed_root(params)
+    return os.path.join(processed_root, params['dataset_id'])
+
+
+def _prepare_params_with_processed_root(params):
+    """准备包含 processed_root 的参数副本"""
+    processed_root = _get_processed_root(params)
+    params_with_processed = params.copy()
+    params_with_processed['processed_root'] = processed_root
+    return params_with_processed, processed_root
+
+
+def _acquire_inference_lock(lock_file, max_retries=5):
+    """获取推理锁文件，带重试机制
+
+    Args:
+        lock_file: 锁文件路径
+        max_retries: 最大重试次数
+
+    Returns:
+        bool: 是否成功获取锁
+
+    Raises:
+        RuntimeError: 重试次数用尽后仍未获取锁
+    """
+    for retry in range(max_retries):
+        try:
+            if os.path.exists(lock_file):
+                lock_age = time.time() - os.path.getmtime(lock_file)
+                if lock_age > 300:
+                    logging.warning(f"Removing stale lock file (age: {lock_age:.0f}s)")
+                    os.remove(lock_file)
+                else:
+                    # 检查锁文件中的进程是否还在运行
+                    try:
+                        with open(lock_file, 'r') as f:
+                            content = f.read()
+                            if 'PID:' in content:
+                                match = re.search(r'PID:\s*(\d+)', content)
+                                if match:
+                                    pid = int(match.group(1))
+                                    try:
+                                        os.kill(pid, 0)
+                                        raise RuntimeError(f"Inference already running (PID: {pid})")
+                                    except OSError:
+                                        logging.warning(f"Process {pid} not found, removing stale lock file")
+                                        os.remove(lock_file)
+                    except Exception:
+                        os.remove(lock_file)
+                    else:
+                        raise RuntimeError(f"Inference already running (age: {lock_age:.0f}s)")
+
+            # 写入新的锁文件
+            with open(lock_file, 'w') as f:
+                f.write(f"PID: {os.getpid()}, Time: {time.time()}")
+            return True
+
+        except RuntimeError:
+            if retry == max_retries - 1:
+                raise
+            else:
+                logging.warning(f"Retry {retry + 1}/{max_retries}: Lock acquisition failed")
+                time.sleep(3)
+        except Exception as e:
+            if retry == max_retries - 1:
+                raise RuntimeError(f"Failed to acquire lock after {max_retries} retries: {e}")
+            else:
+                logging.warning(f"Retry {retry + 1}/{max_retries}: {e}")
+                time.sleep(3)
+
+    return False
+
+
+def _setup_inference_output(params, args, rank, data_dir):
+    """设置推理输出目录和锁文件
+
+    Args:
+        params: 参数字典
+        args: 命令行参数
+        rank: 当前进程 rank
+        data_dir: 数据目录
+
+    Returns:
+        dict: 包含 output_dir 和 lock_file 的字典
+    """
+    output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
+    lock_file = os.path.join(output_dir, ".inference_lock")
+
+    # 获取锁
+    _acquire_inference_lock(lock_file)
+
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 检查是否有已完成文件（恢复模式）
+    completed = get_completed_files(output_dir)
+    if completed:
+        logging.info(f"Resume mode: {len(completed)} files already completed: {sorted(completed)}")
+
+    return {
+        'output_dir': output_dir,
+        'lock_file': lock_file,
+        'completed': completed
+    }
+
+
+def run_train(model, feature_map, params, args, workflow_logger=None):
+    """Training function.
+
+    Args:
+        model: Model instance for training
+        feature_map: Feature map for data processing
+        params: Parameters dictionary
+        args: Arguments dictionary
+        workflow_logger: Optional WorkflowLogger for Dashboard WebSocket broadcasting
+    """
     rank = params.get('distributed_rank', 0)
     train_gen, valid_gen = RankDataLoader(feature_map, stage='train', **params).make_iterator()
+
+    # Set workflow_logger on model if available
+    if workflow_logger:
+        model._workflow_logger = workflow_logger
+
     model.fit(train_gen, validation_data=valid_gen, **params)
 
     if rank == 0:
@@ -192,8 +323,6 @@ def run_train(model, feature_map, params, args):
 
 def get_completed_files(output_dir):
     """Get list of completed files (part_N.parquet)."""
-    import glob
-    import re
     completed_files = set()
     if not os.path.exists(output_dir):
         return completed_files
@@ -237,8 +366,16 @@ def merge_distributed_results(output_dir, world_size):
             logging.info(f"Merged {len(files)} rank files into {merged_file}")
 
 
-def run_inference(model, feature_map, params, args):
-    """Universal inference function supporting single-task, multi-task, and sweep modes."""
+def run_inference(model, feature_map, params, args, workflow_logger=None):
+    """Universal inference function supporting single-task, multi-task, and sweep modes.
+
+    Args:
+        model: Model instance for inference
+        feature_map: Feature map for data processing
+        params: Parameters dictionary
+        args: Arguments dictionary
+        workflow_logger: Optional WorkflowLogger for Dashboard WebSocket broadcasting
+    """
     _install_signal_handlers()
     distributed = params.get('distributed', False)
     rank = params.get('distributed_rank', 0)
@@ -246,12 +383,9 @@ def run_inference(model, feature_map, params, args):
 
     model.load_weights(model.checkpoint)
 
-    # 从 params 获取 processed_root，如果不存在则使用 data_root
-    processed_root = params.get('processed_root', params['data_root'])
-    data_dir = os.path.join(processed_root, params['dataset_id'])
-    # 将 processed_root 传递给 FeatureProcessor
-    params_with_processed = params.copy()
-    params_with_processed['processed_root'] = processed_root
+    # 使用统一的辅助函数获取参数
+    params_with_processed, processed_root = _prepare_params_with_processed_root(params)
+    data_dir = _get_data_dir(params, processed_root)
     feature_encoder = FeatureProcessor(**params_with_processed).load_pickle(
         params.get('pickle_file', os.path.join(data_dir, "feature_processor.pkl"))
     )
@@ -287,7 +421,6 @@ def run_inference(model, feature_map, params, args):
 
     # Setup output directory
     output_dir = os.path.join(data_dir, f"{args['expid']}_inference_result")
-    lock_file = os.path.join(output_dir, ".inference_lock")
 
     # Initialize SweepInference (auto-detects sweep mode)
     sweep_inference = SweepInference(model, feature_map, params)
@@ -299,69 +432,10 @@ def run_inference(model, feature_map, params, args):
         if sweep_inference.sweep_enabled:
             logging.info(f"Sweep column: {sweep_inference.sweep_col}, Domains per pass: {sweep_inference.domains_per_pass}")
 
-    # Clean output directory and setup lock file
-    max_retries = 5
-    for retry in range(max_retries):
-        try:
-            if rank == 0:
-                if os.path.exists(lock_file):
-                    lock_age = time.time() - os.path.getmtime(lock_file)
-                    if lock_age > 300:
-                        logging.warning(f"Removing stale lock file (age: {lock_age:.0f}s)")
-                        os.remove(lock_file)
-                    else:
-                        try:
-                            with open(lock_file, 'r') as f:
-                                content = f.read()
-                                if 'PID:' in content:
-                                    match = re.search(r'PID:\s*(\d+)', content)
-                                    if match:
-                                        pid = int(match.group(1))
-                                        try:
-                                            os.kill(pid, 0)
-                                            raise RuntimeError(f"Inference already running (PID: {pid})")
-                                        except OSError:
-                                            logging.warning(f"Process {pid} not found, removing stale lock file")
-                                            os.remove(lock_file)
-                        except Exception:
-                            os.remove(lock_file)
-                        else:
-                            raise RuntimeError(f"Inference already running (age: {lock_age:.0f}s)")
-
-                if not os.path.exists(output_dir):
-                    os.makedirs(output_dir, exist_ok=True)
-                else:
-                    completed = get_completed_files(output_dir)
-                    if completed:
-                        logging.info(f"Resume mode: {len(completed)} files already completed: {sorted(completed)}")
-
-                with open(lock_file, 'w') as f:
-                    f.write(f"PID: {os.getpid()}, Time: {time.time()}")
-
-            if distributed and dist.is_initialized():
-                distributed_barrier()
-
-            if not os.path.exists(output_dir):
-                try:
-                    os.makedirs(output_dir, exist_ok=True)
-                except:
-                    pass
-
-            if not os.path.exists(output_dir):
-                raise RuntimeError(f"Output directory does not exist: {output_dir}")
-
-            if rank == 0:
-                logging.info(f"Output directory ready: {output_dir}")
-
-            break
-        except Exception as e:
-            if retry == max_retries - 1:
-                logging.error(f"Failed to setup output directory after {max_retries} retries: {e}")
-                raise
-            else:
-                if rank == 0:
-                    logging.warning(f"Retry {retry + 1}/{max_retries}: {e}")
-                time.sleep(3)
+    # 使用统一的辅助函数设置输出目录和锁文件
+    output_ctx = _setup_inference_output(params, args, rank, data_dir)
+    output_dir = output_ctx['output_dir']
+    lock_file = output_ctx['lock_file']
 
     if distributed and dist.is_initialized():
         distributed_barrier()
@@ -370,8 +444,6 @@ def run_inference(model, feature_map, params, args):
         logging.info('******** Start Inference ********')
         logging.info(f"Results will be saved to: {output_dir}")
 
-    import warnings
-    from tqdm import tqdm
     warnings.simplefilter("ignore")
     logger = logging.getLogger()
     original_level = logger.level
@@ -424,7 +496,7 @@ def run_inference(model, feature_map, params, args):
         logging.info(f"  - DDP initialized: {is_ddp}")
         logging.info(f"  - Num Workers: {num_workers_value}")
         if is_ddp and num_workers_value > 0:
-            logging.warning(f"  ⚠️  DDP + num_workers={num_workers_value} may cause hangs")
+            logging.warning(f"  WARNING: DDP + num_workers={num_workers_value} may cause hangs")
         logging.info(f"  - Batch Size: {batch_size_value}")
         logging.info(f"  - Chunk Size: {chunk_size_value}")
         logging.info(f"  - Files to process: {len(rank_files)}")
@@ -476,8 +548,6 @@ def run_inference(model, feature_map, params, args):
         )
 
         try:
-            from tqdm import tqdm
-
             is_tty = sys.stdout.isatty()
 
             # Setup dual progress bars
@@ -486,26 +556,61 @@ def run_inference(model, feature_map, params, args):
             batch_pbar = None
 
             if is_tty:
-                # Total progress bar (position 0)
-                total_pbar = tqdm(
-                    total=len(file_total_rows),
-                    desc=f"Rank {rank}: Total",
-                    position=0,
-                    leave=True,
-                    dynamic_ncols=True,
-                    disable=False
-                )
+                # Use TqdmWebSocketAdapter if workflow_logger is available
+                if workflow_logger and rank == 0:
+                    from fuxictr.pytorch.utils import create_progress_adapter
+
+                    # Create a custom iterable that tracks file completion
+                    total_pbar = create_progress_adapter(
+                        iterable=None,  # We'll manually update n
+                        logger=workflow_logger,
+                        step_name="inference_total",
+                        rank=rank,
+                        world_size=world_size,
+                        total=len(file_total_rows),
+                        desc=f"Rank {rank}: Total",
+                        position=0,
+                        leave=True,
+                        dynamic_ncols=True,
+                        disable=False
+                    )
+                else:
+                    total_pbar = tqdm(
+                        total=len(file_total_rows),
+                        desc=f"Rank {rank}: Total",
+                        position=0,
+                        leave=True,
+                        dynamic_ncols=True,
+                        disable=False
+                    )
 
                 # Current file progress bar (position 1)
-                file_pbar = tqdm(
-                    total=100,
-                    desc=f"Rank {rank}: Current file",
-                    position=1,
-                    leave=False,
-                    dynamic_ncols=True,
-                    disable=False,
-                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]"
-                )
+                if workflow_logger and rank == 0:
+                    from fuxictr.pytorch.utils import create_progress_adapter
+                    file_pbar = create_progress_adapter(
+                        iterable=None,  # We'll manually update n
+                        logger=workflow_logger,
+                        step_name="inference_file",
+                        rank=rank,
+                        world_size=world_size,
+                        total=100,
+                        desc=f"Rank {rank}: Current file",
+                        position=1,
+                        leave=False,
+                        dynamic_ncols=True,
+                        disable=False,
+                        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]"
+                    )
+                else:
+                    file_pbar = tqdm(
+                        total=100,
+                        desc=f"Rank {rank}: Current file",
+                        position=1,
+                        leave=False,
+                        dynamic_ncols=True,
+                        disable=False,
+                        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]"
+                    )
 
             # Track current file for progress update
             current_file_id = None
@@ -565,6 +670,19 @@ def run_inference(model, feature_map, params, args):
                 if is_tty and total_pbar:
                     total_pbar.n = files_done_count
                     total_pbar.refresh()
+
+                    # Broadcast progress to WebSocket
+                    if workflow_logger and rank == 0:
+                        try:
+                            pct = int(files_done_count * 100 / len(file_total_rows)) if len(file_total_rows) > 0 else 0
+                            workflow_logger.progress(
+                                step="inference",
+                                current=files_done_count,
+                                total=len(file_total_rows),
+                                message=f"{pct}% files completed"
+                            )
+                        except Exception:
+                            pass
 
                     # Update current file progress
                     if len(unique_files) > 0:
@@ -697,16 +815,15 @@ if __name__ == '__main__':
     seed_everything(seed=params['seed'])
 
     # Load feature_map
-    # 从 params 获取 processed_root，如果不存在则使用 data_root
-    processed_root = params.get('processed_root', params['data_root'])
-    data_dir = os.path.join(processed_root, params['dataset_id'])
+    # 使用统一的辅助函数获取参数
+    processed_root = _get_processed_root(params)
+    data_dir = _get_data_dir(params, processed_root)
     feature_map_json = os.path.join(data_dir, "feature_map.json")
     if params["data_format"] == "parquet" and args['mode'] == 'train':
         data_splits = (None, None, None)
         if rank == 0:
-            # 将 processed_root 传递给 FeatureProcessor
-            params_with_processed = params.copy()
-            params_with_processed['processed_root'] = processed_root
+            # 使用统一的辅助函数准备参数
+            params_with_processed, _ = _prepare_params_with_processed_root(params)
             feature_encoder = FeatureProcessor(**params_with_processed)
             data_splits = build_dataset(feature_encoder, **params_with_processed)
         if distributed and dist.is_initialized():
@@ -726,10 +843,23 @@ if __name__ == '__main__':
     model = model_class(feature_map, **params)
     model.count_parameters()
 
+    # Initialize workflow_logger if in Dashboard mode
+    workflow_logger = None
+    if os.environ.get('FUXICTR_WORKFLOW_MODE') == 'dashboard':
+        try:
+            from fuxictr.workflow.utils.logger import get_workflow_logger
+            task_id = os.environ.get('FUXICTR_TASK_ID')
+            if task_id:
+                workflow_logger = get_workflow_logger(int(task_id))
+                if rank == 0:
+                    logging.info(f"Workflow logger initialized for task {task_id}")
+        except Exception as e:
+            logging.warning(f"Failed to initialize workflow logger: {e}")
+
     if args['mode'] == 'train':
-        run_train(model, feature_map, params, args)
+        run_train(model, feature_map, params, args, workflow_logger=workflow_logger)
     elif args['mode'] == 'inference':
-        run_inference(model, feature_map, params, args)
+        run_inference(model, feature_map, params, args, workflow_logger=workflow_logger)
 
     if distributed and dist.is_initialized():
         distributed_barrier()

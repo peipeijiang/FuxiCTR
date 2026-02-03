@@ -321,10 +321,14 @@ class TrainingExecutor(BaseExecutor):
         os.makedirs(model_root, exist_ok=True)
 
         # Set up environment with data_root for run_expid.py
+        task_id = task.get("task_id", 0)
         env = {
             **os.environ,
             "CUDA_VISIBLE_DEVICES": "0,1,2,3",
-            "FUXICTR_DATA_ROOT": data_root
+            "FUXICTR_DATA_ROOT": data_root,
+            # Enable Dashboard mode for WebSocket logging
+            "FUXICTR_WORKFLOW_MODE": "dashboard",
+            "FUXICTR_TASK_ID": str(task_id)
         }
 
         # Start training process

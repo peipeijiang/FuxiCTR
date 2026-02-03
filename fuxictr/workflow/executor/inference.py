@@ -124,8 +124,9 @@ class InferenceExecutor(BaseExecutor):
                 infer_data=raw_infer_data,
                 output_path=inference_output_path,
                 step_name=step_name,
-                checkpoint=checkpoint,
-                cancel_event=cancel_event
+                checkpoint=None,
+                cancel_event=cancel_event,
+                task_id=task_id
             )
 
             result.update(inference_result)
@@ -158,7 +159,8 @@ class InferenceExecutor(BaseExecutor):
         output_path: str,
         step_name: str,
         checkpoint: Optional[Dict[str, Any]],
-        cancel_event: Optional[asyncio.Event]
+        cancel_event: Optional[asyncio.Event],
+        task_id: int = 0
     ) -> Dict[str, Any]:
         """
         Run the inference process.
@@ -221,7 +223,13 @@ class InferenceExecutor(BaseExecutor):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": "0,1,2,3"}
+            env={
+                **os.environ,
+                "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+                # Enable Dashboard mode for WebSocket logging
+                "FUXICTR_WORKFLOW_MODE": "dashboard",
+                "FUXICTR_TASK_ID": str(task_id)
+            }
         )
 
         # Parse output
