@@ -922,31 +922,135 @@ if task_id:
         task = response.json()
 
         # ========== HEADER ==========
-        # Back button using Streamlit
-        col_back, col_title, col_status = st.columns([1, 5, 1.5])
-        with col_back:
-            if st.button("← 返回", key="back_to_list", use_container_width=True):
-                st.query_params.clear()
-                st.rerun()
+        # Status badge with improved style
+        task_status = task.get('status', 'unknown')
+        status_colors = {
+            'pending': ('#fef3c7', '#92400e', '待处理'),
+            'running': ('#dbeafe', '#1e40af', '运行中'),
+            'completed': ('#dcfce7', '#166534', '已完成'),
+            'failed': ('#fee2e2', '#991b1b', '失败'),
+            'cancelled': ('#f1f5f9', '#475569', '已取消')
+        }
+        bg_color, text_color, status_text = status_colors.get(task_status.lower(), ('#f1f5f9', '#475569', task_status.upper()))
 
-        with col_title:
-            st.markdown(f"""
-                <div style="margin-top: 8px;">
-                    <h1 style="font-size: 20px; font-weight: 600; color: #0f172a; margin: 0 0 4px 0;">
-                        {task.get('name', '未命名任务')}
-                    </h1>
-                    <div style="font-size: 12px; color: #64748b;">
-                        创建于 {task.get('created_at', '')[:16] if task.get('created_at') else '-'}
+        # Modern header design
+        st.markdown(f"""
+            <style>
+                .back-btn {{
+                    background: white;
+                    border: 1px solid #e2e8f0;
+                    color: #64748b;
+                    padding: 10px 16px;
+                    border-radius: 10px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 8px;
+                    margin-bottom: 20px;
+                    transition: all 0.2s;
+                    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+                }}
+                .back-btn:hover {{
+                    background: #f8fafc;
+                    border-color: #cbd5e1;
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+                }}
+            </style>
+
+            <div style="
+                background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+                border-radius: 16px;
+                border: 1px solid #e2e8f0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.1);
+                padding: 28px 32px;
+                margin-bottom: 28px;
+            ">
+                <div style="
+                    display: flex;
+                    align-items: flex-start;
+                    justify-content: space-between;
+                    gap: 24px;
+                ">
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="
+                            display: inline-flex;
+                            align-items: center;
+                            gap: 12px;
+                            margin-bottom: 16px;
+                        ">
+                            <div style="
+                                width: 48px;
+                                height: 48px;
+                                background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+                                border-radius: 12px;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                box-shadow: 0 4px 6px rgba(59, 130, 246, 0.3);
+                            ">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                                    <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 style="
+                                    font-size: 26px;
+                                    font-weight: 800;
+                                    color: #0f172a;
+                                    margin: 0;
+                                    letter-spacing: -0.03em;
+                                    line-height: 1.2;
+                                ">{task.get('name', '未命名任务')}</h1>
+                            </div>
+                        </div>
+                        <div style="
+                            display: flex;
+                            align-items: center;
+                            gap: 20px;
+                            color: #64748b;
+                            font-size: 14px;
+                        ">
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <polyline points="12 6 12 12 16 14"/>
+                                </svg>
+                                创建于 {task.get('created_at', '')[:16] if task.get('created_at') else '-'}
+                            </div>
+                            {f'''<div style="display: flex; align-items: center; gap: 6px;">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                    <circle cx="12" cy="7" r="4"/>
+                                </svg>
+                                {task.get('user', '-')}
+                            </div>''' if task.get('user') else ''}
+                        </div>
+                    </div>
+                    <div style="flex-shrink: 0;">
+                        <div style="
+                            background: {bg_color};
+                            color: {text_color};
+                            padding: 12px 24px;
+                            border-radius: 12px;
+                            font-size: 15px;
+                            font-weight: 700;
+                            letter-spacing: 0.02em;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        ">{status_text}</div>
                     </div>
                 </div>
-            """, unsafe_allow_html=True)
+            </div>
+        """, unsafe_allow_html=True)
 
-        with col_status:
-            st.markdown(f"""
-                <div style="margin-top: 20px;">
-                    {render_status_badge(task.get('status', 'unknown'))}
-                </div>
-            """, unsafe_allow_html=True)
+        # Back button (Streamlit)
+        col_back = st.columns([1])[0]
+        with col_back:
+            if st.button("← 返回列表", key="back_to_list", use_container_width=True):
+                st.query_params.clear()
+                st.rerun()
 
         # ========== CONFIGURATION FORM ==========
         st.markdown("""
