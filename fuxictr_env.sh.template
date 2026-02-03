@@ -1,0 +1,101 @@
+#!/bin/bash
+# =========================================================================
+# FuxiCTR 部署环境变量配置
+# =========================================================================
+#
+# 说明：
+#   1. 根据实际部署路径修改下面的变量
+#   2. 在 ~/.bashrc 中添加: source /path/to/fuxictr_env.sh
+#   3. 执行: source ~/.bashrc
+#
+# 注意事项：
+#   - 所有路径请使用绝对路径
+#   - 确保目录存在且有正确的读写权限
+#   - 修改后需要重启服务才能生效
+#
+# =========================================================================
+
+# ============================================================================
+# 基础路径配置
+# ============================================================================
+
+# 代码根目录（Git 仓库位置）
+export FUXICTR_ROOT="/opt/fuxictr"
+
+# Python 虚拟环境路径
+export FUXICTR_VENV="/opt/fuxictr_venv"
+
+# ============================================================================
+# 数据存储路径（Server 142 - 训练服务器）
+# ============================================================================
+
+# 基础存储目录（所有数据的根目录）
+export FUXICTR_STORAGE_BASE="/data/fuxictr"
+
+# Dashboard 数据路径
+export FUXICTR_DATA_ROOT="${FUXICTR_STORAGE_BASE}/data"
+export FUXICTR_PROCESSED_ROOT="${FUXICTR_STORAGE_BASE}/processed_data"
+
+# Workflow 数据路径
+export FUXICTR_WORKFLOW_DATASETS="${FUXICTR_STORAGE_BASE}/workflow_datasets"
+export FUXICTR_WORKFLOW_PROCESSED="${FUXICTR_STORAGE_BASE}/workflow_processed"
+export FUXICTR_WORKFLOW_MODELS="${FUXICTR_STORAGE_BASE}/workflow_models"
+export FUXICTR_WORKFLOW_LOGS="${FUXICTR_STORAGE_BASE}/workflow_logs"
+
+# ============================================================================
+# 日志路径
+# ============================================================================
+
+export FUXICTR_DASHBOARD_LOG_DIR="${FUXICTR_ROOT}/dashboard/logs"
+export FUXICTR_DB_BACKUP_DIR="${FUXICTR_STORAGE_BASE}/db_backup"
+
+# ============================================================================
+# 配置文件路径
+# ============================================================================
+
+export FUXICTR_CONFIG_PATH="${FUXICTR_ROOT}/fuxictr/workflow/config.yaml"
+
+# ============================================================================
+# Server 21 配置（数据源服务器）
+# ============================================================================
+
+export FUXICTR_SERVER_21_HOST="21.xxxxxx.com"          # ⚠️ 修改为实际主机名
+export FUXICTR_SERVER_21_USER="your_username"          # ⚠️ 修改为实际用户名
+export FUXICTR_SERVER_21_PORT="22"
+export FUXICTR_SERVER_21_KEY_PATH="~/.ssh/id_rsa"
+export FUXICTR_SERVER_21_STAGING="/tmp/fuxictr_staging"
+
+# ============================================================================
+# 服务端口配置
+# ============================================================================
+
+export FUXICTR_WORKFLOW_PORT="8001"          # Workflow Backend
+export FUXICTR_DASHBOARD_PORT="8501"         # Streamlit Dashboard
+
+# ============================================================================
+# 日志配置
+# ============================================================================
+
+export FUXICTR_LOG_LEVEL="INFO"               # DEBUG, INFO, WARNING, ERROR
+
+# ============================================================================
+# 显示环境变量信息（加载时显示）
+# ============================================================================
+
+if [ -n "$FUXICTR_ENV_LOADED" ]; then
+    return 0  # 避免重复加载
+fi
+
+echo "✅ FuxiCTR 环境变量已加载"
+echo ""
+echo "📂 配置路径："
+echo "   代码目录:     $FUXICTR_ROOT"
+echo "   虚拟环境:     $FUXICTR_VENV"
+echo "   数据存储:     $FUXICTR_STORAGE_BASE"
+echo ""
+echo "🔌 服务端口："
+echo "   Workflow:     $FUXICTR_WORKFLOW_PORT"
+echo "   Dashboard:    $FUXICTR_DASHBOARD_PORT"
+echo ""
+
+export FUXICTR_ENV_LOADED=1

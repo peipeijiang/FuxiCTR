@@ -1,8 +1,22 @@
+import os
 import yaml
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Union
 from yaml import YAMLError
+
+
+def _expand_env_vars(obj):
+    """Recursively expand environment variables in a configuration object."""
+    if isinstance(obj, str):
+        # 扩展 ${VAR} 格式的环境变量
+        return os.path.expandvars(obj)
+    elif isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    else:
+        return obj
 
 @dataclass
 class ServerConfig:
@@ -78,7 +92,10 @@ class Config:
         except YAMLError as e:
             raise YAMLError(f"Invalid YAML syntax in configuration file {config_path}: {e}")
 
-        # Check for missing required sections
+        # 扩展环境变量
+        data = _expand_env_vars(data)
+
+        # 检查缺失的必需配置项
         required_sections = ['servers', 'storage', 'transfer', 'task']
         missing_sections = [section for section in required_sections if section not in data]
         if missing_sections:

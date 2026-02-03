@@ -9,12 +9,13 @@
 ## 📋 目录
 
 1. [架构概述](#架构概述)
-2. [Server 21 配置](#server-21-配置)
-3. [Server 142 配置](#server-142-配置)
-4. [目录结构说明](#目录结构说明)
-5. [配置文件详解](#配置文件详解)
-6. [验证测试](#验证测试)
-7. [常见问题](#常见问题)
+2. [灵活部署配置](#灵活部署配置) ⭐ 新增
+3. [Server 21 配置](#server-21-配置)
+4. [Server 142 配置](#server-142-配置)
+5. [目录结构说明](#目录结构说明)
+6. [配置文件详解](#配置文件详解)
+7. [验证测试](#验证测试)
+8. [常见问题](#常见问题)
 
 ---
 
@@ -48,6 +49,97 @@
 | **模型分离** | `model_zoo/` (Dashboard) vs `workflow_models/` (Workflow) |
 | **实验隔离** | 每个实验使用独立文件夹 |
 | **日志分离** | Dashboard 日志 vs Workflow 日志，互不干扰 |
+
+---
+
+## 灵活部署配置 ⭐
+
+### 说明
+
+本文档中的路径（如 `/opt/fuxictr`、`/data/fuxictr`）为示例路径。您可以根据实际情况灵活调整部署位置。
+
+### 快速配置方法
+
+使用环境变量配置文件，一处修改全局生效：
+
+```bash
+# 1. 复制环境变量模板
+cp fuxictr/fuxictr_env.sh.template fuxictr_env.sh
+
+# 2. 编辑环境变量，修改为实际路径
+nano fuxictr_env.sh
+
+# 3. 在 ~/.bashrc 中添加
+echo "source $(pwd)/fuxictr_env.sh" >> ~/.bashrc
+
+# 4. 重新加载环境变量
+source ~/.bashrc
+```
+
+### 常见部署场景
+
+#### 场景 1：标准部署（默认）
+
+```
+/opt/fuxictr/          # 代码
+/data/fuxictr/         # 数据
+/opt/fuxictr_venv/     # 虚拟环境
+```
+
+#### 场景 2：单分区部署
+
+```bash
+# 修改 fuxictr_env.sh
+export FUXICTR_ROOT="$HOME/fuxictr"
+export FUXICTR_VENV="$HOME/fuxictr_venv"
+export FUXICTR_STORAGE_BASE="$HOME/fuxictr_data"
+```
+
+#### 场景 3：多磁盘部署
+
+```bash
+# 修改 fuxictr_env.sh
+export FUXICTR_ROOT="/mnt/ssd/fuxictr"               # SSD - 代码
+export FUXICTR_VENV="$HOME/fuxictr_venv"               # Home - 虚拟环境
+export FUXICTR_STORAGE_BASE="/mnt/hdd1/fuxictr_data"  # HDD1 - 数据
+export FUXICTR_WORKFLOW_MODELS="/mnt/hdd2/fuxictr_models" # HDD2 - 模型
+```
+
+#### 场景 4：完全自定义
+
+```bash
+# 根据实际情况修改所有路径
+export FUXICTR_ROOT="/your/custom/path"
+export FUXICTR_VENV="/your/venv/path"
+export FUXICTR_STORAGE_BASE="/your/data/path"
+```
+
+### 修改 systemd 服务使用环境变量
+
+在 systemd 服务文件中添加 `EnvironmentFile`：
+
+```ini
+[Service]
+Type=simple
+User=your_username
+Group=your_username
+WorkingDirectory=${FUXICTR_ROOT}
+EnvironmentFile=${FUXICTR_ROOT}/fuxictr_env.sh  # ← 加载环境变量
+ExecStart=${FUXICTR_VENV}/bin/python -m fuxictr.workflow.service
+```
+
+### 重新配置服务后
+
+修改环境变量后，需要重启服务：
+
+```bash
+# 重新加载环境变量
+source ~/.bashrc
+
+# 重启服务
+sudo systemctl restart fuxictr-workflow
+sudo systemctl restart fuxictr-dashboard
+```
 
 ---
 
