@@ -728,24 +728,6 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
         border: 1px solid #3e3e3e;
         box-shadow: inset 0 2px 8px rgba(0,0,0,0.3);
     ">
-        <div id="log-header-{task_id}" style="
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #3e3e3e;
-        ">
-            <span style="color: #94a3b8; font-weight: 600;">日志输出</span>
-            <span id="ws-status-{task_id}" style="
-                padding: 4px 10px;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: 500;
-                background: #3e3e3e;
-                color: #808080;
-            ">等待连接</span>
-        </div>
         <div id="log-content-{task_id}" style="
             line-height: 1.6;
         ">
@@ -757,7 +739,6 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
     (function() {{
         const wsUrl = "{ws_url}";
         const logContainer = document.getElementById('log-content-{task_id}');
-        const statusElement = document.getElementById('ws-status-{task_id}');
         const mainContainer = document.getElementById('log-container-{task_id}');
 
         let ws = null;
@@ -874,9 +855,6 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
 
             ws.onopen = function() {{
                 console.log('WebSocket connected');
-                statusElement.textContent = '已连接';
-                statusElement.style.background = '#4ec9b0';
-                statusElement.style.color = '#1e1e1e';
                 clearTimeout(reconnectTimeout);
             }};
 
@@ -891,15 +869,10 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
 
             ws.onerror = function(error) {{
                 console.error('WebSocket error:', error);
-                statusElement.textContent = '连接错误';
-                statusElement.style.background = '#f14c4c';
             }};
 
             ws.onclose = function() {{
                 console.log('WebSocket disconnected');
-                statusElement.textContent = '已断开';
-                statusElement.style.background = '#3e3e3e';
-                statusElement.style.color = '#808080';
 
                 // Reconnect after 3 seconds
                 reconnectTimeout = setTimeout(connect, 3000);
@@ -949,46 +922,31 @@ if task_id:
         task = response.json()
 
         # ========== HEADER ==========
-        st.markdown(f"""
-            <div style="
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 24px;
-                padding: 20px 24px;
-                background: white;
-                border-radius: 12px;
-                border: 1px solid #e2e8f0;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            ">
-                <div>
-                    <button onclick="window.location.href='?'" style="
-                        background: none;
-                        border: none;
-                        color: #64748b;
-                        font-size: 14px;
-                        cursor: pointer;
-                        padding: 8px 0;
-                        display: flex;
-                        align-items: center;
-                        gap: 6px;
-                        margin-bottom: 12px;
-                    ">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M19 12H5M12 19l-7-7 7-7"/>
-                        </svg>
-                        返回列表
-                    </button>
-                    <h1 style="font-size: 24px; font-weight: 600; color: #0f172a; margin: 0 0 4px 0;">
+        # Back button using Streamlit
+        col_back, col_title, col_status = st.columns([1, 5, 1.5])
+        with col_back:
+            if st.button("← 返回", key="back_to_list", use_container_width=True):
+                st.query_params.clear()
+                st.rerun()
+
+        with col_title:
+            st.markdown(f"""
+                <div style="margin-top: 8px;">
+                    <h1 style="font-size: 20px; font-weight: 600; color: #0f172a; margin: 0 0 4px 0;">
                         {task.get('name', '未命名任务')}
                     </h1>
-                    <div style="font-size: 13px; color: #64748b; margin-top: 4px;">
+                    <div style="font-size: 12px; color: #64748b;">
                         创建于 {task.get('created_at', '')[:16] if task.get('created_at') else '-'}
                     </div>
                 </div>
-                {render_status_badge(task.get('status', 'unknown'))}
-            </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+
+        with col_status:
+            st.markdown(f"""
+                <div style="margin-top: 20px;">
+                    {render_status_badge(task.get('status', 'unknown'))}
+                </div>
+            """, unsafe_allow_html=True)
 
         # ========== CONFIGURATION FORM ==========
         st.markdown("""
@@ -1288,18 +1246,17 @@ if task_id:
         st.markdown('</div>', unsafe_allow_html=True)
 
         # ========== LOGS SECTION ==========
-        # Auto-refresh toggle (in a toolbar above logs)
-        col_refresh, col_space, col_btn = st.columns([2, 6, 1])
-        with col_refresh:
-            auto_refresh = st.checkbox("自动刷新日志", value=True, key=f"auto_refresh_{task_id}")
-        with col_btn:
-            if st.button("刷新", key=f"refresh_{task_id}"):
-                st.rerun()
+        st.markdown('<div style="margin-bottom: 16px;"></div>', unsafe_allow_html=True)
+
+        # Simple toolbar
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.markdown('<h3 style="font-size: 16px; font-weight: 600; color: #0f172a; margin: 0;">实时日志</h3>', unsafe_allow_html=True)
+        with col2:
+            auto_refresh = st.checkbox("自动刷新", value=True, key=f"auto_refresh_{task_id}", label_visibility="visible")
 
         # WebSocket Real-time Log Component
         ws_logs_placeholder = st.empty()
-
-        # Render WebSocket log viewer
         render_websocket_logs(ws_logs_placeholder, task_id, API_BASE, auto_refresh)
 
 
