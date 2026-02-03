@@ -28,26 +28,25 @@ export FUXICTR_VENV="/opt/fuxictr_venv"
 # ============================================================================
 # 数据存储路径（Server 142 - 训练服务器）
 # ============================================================================
-
-# 基础存储目录（所有数据的根目录）
-export FUXICTR_STORAGE_BASE="/data/fuxictr"
+# 说明：所有数据都存储在 FuxiCTR 代码目录下
+# ============================================================================
 
 # Dashboard 数据路径
-export FUXICTR_DATA_ROOT="${FUXICTR_STORAGE_BASE}/data"
-export FUXICTR_PROCESSED_ROOT="${FUXICTR_STORAGE_BASE}/processed_data"
+export FUXICTR_DATA_ROOT="${FUXICTR_ROOT}/data"
+export FUXICTR_PROCESSED_ROOT="${FUXICTR_ROOT}/processed_data"
 
 # Workflow 数据路径
-export FUXICTR_WORKFLOW_DATASETS="${FUXICTR_STORAGE_BASE}/workflow_datasets"
-export FUXICTR_WORKFLOW_PROCESSED="${FUXICTR_STORAGE_BASE}/workflow_processed"
-export FUXICTR_WORKFLOW_MODELS="${FUXICTR_STORAGE_BASE}/workflow_models"
-export FUXICTR_WORKFLOW_LOGS="${FUXICTR_STORAGE_BASE}/workflow_logs"
+export FUXICTR_WORKFLOW_DATASETS="${FUXICTR_ROOT}/workflow_datasets"
+export FUXICTR_WORKFLOW_PROCESSED="${FUXICTR_ROOT}/workflow_processed"
+export FUXICTR_WORKFLOW_MODELS="${FUXICTR_ROOT}/workflow_models"
+export FUXICTR_WORKFLOW_LOGS="${FUXICTR_ROOT}/workflow_logs"
 
 # ============================================================================
 # 日志路径
 # ============================================================================
 
 export FUXICTR_DASHBOARD_LOG_DIR="${FUXICTR_ROOT}/dashboard/logs"
-export FUXICTR_DB_BACKUP_DIR="${FUXICTR_STORAGE_BASE}/db_backup"
+export FUXICTR_DB_BACKUP_DIR="${FUXICTR_ROOT}/db_backup"
 
 # ============================================================================
 # 配置文件路径
@@ -91,7 +90,7 @@ echo ""
 echo "📂 配置路径："
 echo "   代码目录:     $FUXICTR_ROOT"
 echo "   虚拟环境:     $FUXICTR_VENV"
-echo "   数据存储:     $FUXICTR_STORAGE_BASE"
+echo "   数据目录:     $FUXICTR_ROOT/{data,workflow_datasets,workflow_models,workflow_logs}"
 echo ""
 echo "🔌 服务端口："
 echo "   Workflow:     $FUXICTR_WORKFLOW_PORT"

@@ -31,15 +31,18 @@ echo ""
 
 echo -e "${YELLOW}请选择部署场景：${NC}"
 echo ""
-echo "1) 标准部署 (/opt/fuxictr + /data/fuxictr)"
-echo "   ├── 代码: /opt/fuxictr"
-echo "   ├── 虚拟环境: /opt/fuxictr_venv"
-echo "   └── 数据: /data/fuxictr"
+echo "1) 标准部署 (/opt/fuxictr)"
+echo "   ├── 代码和数据: /opt/fuxictr"
+echo "   │   ├── data/              - Dashboard 数据"
+echo "   │   ├── processed_data/    - Dashboard 处理后数据"
+echo "   │   ├── workflow_datasets/ - Workflow 数据集"
+echo "   │   ├── workflow_models/   - Workflow 模型"
+echo "   │   └── workflow_logs/     - Workflow 日志"
+echo "   └── 虚拟环境: /opt/fuxictr_venv"
 echo ""
-echo "2) 单分区部署 (~/fuxictr)"
-echo "   ├── 代码: ~/fuxictr"
-echo "   ├── 虚拟环境: ~/fuxictr_venv"
-echo "   └── 数据: ~/fuxictr_data"
+echo "2) 用户目录部署 (~/fuxictr)"
+echo "   ├── 代码和数据: ~/fuxictr"
+echo "   └── 虚拟环境: ~/fuxictr_venv"
 echo ""
 echo "3) 自定义路径"
 echo "   完全自定义部署路径"
@@ -50,20 +53,17 @@ case $choice in
     1)
         FUXICTR_ROOT="/opt/fuxictr"
         FUXICTR_VENV="/opt/fuxictr_venv"
-        FUXICTR_STORAGE_BASE="/data/fuxictr"
         ;;
     2)
         FUXICTR_ROOT="$HOME/fuxictr"
         FUXICTR_VENV="$HOME/fuxictr_venv"
-        FUXICTR_STORAGE_BASE="$HOME/fuxictr_data"
         ;;
     3)
         echo ""
         echo -e "${YELLOW}自定义路径配置${NC}"
         echo ""
-        read -p "请输入代码目录 [如 /opt/fuxictr]: " FUXICTR_ROOT
+        read -p "请输入代码和数据目录 [如 /opt/fuxictr]: " FUXICTR_ROOT
         read -p "请输入虚拟环境路径 [如 /opt/fuxictr_venv]: " FUXICTR_VENV
-        read -p "请输入数据基础目录 [如 /data/fuxictr]: " FUXICTR_STORAGE_BASE
         ;;
     *)
         echo -e "${RED}无效选择${NC}"
@@ -108,27 +108,25 @@ export FUXICTR_ROOT="$FUXICTR_ROOT"
 export FUXICTR_VENV="$FUXICTR_VENV"
 
 # ============================================================================
-# 数据存储路径（Server 142 - 训练服务器）
+# 数据存储路径（所有数据都在 FuxiCTR 代码目录下）
 # ============================================================================
 
-export FUXICTR_STORAGE_BASE="$FUXICTR_STORAGE_BASE"
-
 # Dashboard 数据路径
-export FUXICTR_DATA_ROOT="\${FUXICTR_STORAGE_BASE}/data"
-export FUXICTR_PROCESSED_ROOT="\${FUXICTR_STORAGE_BASE}/processed_data"
+export FUXICTR_DATA_ROOT="\${FUXICTR_ROOT}/data"
+export FUXICTR_PROCESSED_ROOT="\${FUXICTR_ROOT}/processed_data"
 
 # Workflow 数据路径
-export FUXICTR_WORKFLOW_DATASETS="\${FUXICTR_STORAGE_BASE}/workflow_datasets"
-export FUXICTR_WORKFLOW_PROCESSED="\${FUXICTR_STORAGE_BASE}/workflow_processed"
-export FUXICTR_WORKFLOW_MODELS="\${FUXICTR_STORAGE_BASE}/workflow_models"
-export FUXICTR_WORKFLOW_LOGS="\${FUXICTR_STORAGE_BASE}/workflow_logs"
+export FUXICTR_WORKFLOW_DATASETS="\${FUXICTR_ROOT}/workflow_datasets"
+export FUXICTR_WORKFLOW_PROCESSED="\${FUXICTR_ROOT}/workflow_processed"
+export FUXICTR_WORKFLOW_MODELS="\${FUXICTR_ROOT}/workflow_models"
+export FUXICTR_WORKFLOW_LOGS="\${FUXICTR_ROOT}/workflow_logs"
 
 # ============================================================================
 # 日志路径
 # ============================================================================
 
 export FUXICTR_DASHBOARD_LOG_DIR="\${FUXICTR_ROOT}/dashboard/logs"
-export FUXICTR_DB_BACKUP_DIR="\${FUXICTR_STORAGE_BASE}/db_backup"
+export FUXICTR_DB_BACKUP_DIR="\${FUXICTR_ROOT}/db_backup"
 
 # ============================================================================
 # 配置文件路径
@@ -154,6 +152,12 @@ export FUXICTR_WORKFLOW_PORT="8001"
 export FUXICTR_DASHBOARD_PORT="8501"
 
 # ============================================================================
+# 日志配置
+# ============================================================================
+
+export FUXICTR_LOG_LEVEL="INFO"
+
+# ============================================================================
 # 显示环境变量信息（加载时显示）
 # ============================================================================
 
@@ -166,7 +170,6 @@ echo ""
 echo "📂 配置路径："
 echo "   代码目录:     \$FUXICTR_ROOT"
 echo "   虚拟环境:     \$FUXICTR_VENV"
-echo "   数据存储:     \$FUXICTR_STORAGE_BASE"
 echo ""
 echo "🔌 服务端口："
 echo "   Workflow:     \$FUXICTR_WORKFLOW_PORT"
@@ -189,12 +192,12 @@ echo -e "${BLUE}📁 创建目录结构${NC}"
 dirs=(
     "$FUXICTR_ROOT/data"
     "$FUXICTR_ROOT/processed_data"
-    "$FUXICTR_STORAGE_BASE/workflow_datasets"
-    "$FUXICTR_STORAGE_BASE/workflow_processed"
-    "$FUXICTR_STORAGE_BASE/workflow_models"
-    "$FUXICR_STORAGE_BASE/workflow_logs"
+    "$FUXICTR_ROOT/workflow_datasets"
+    "$FUXICTR_ROOT/workflow_processed"
+    "$FUXICTR_ROOT/workflow_models"
+    "$FUXICTR_ROOT/workflow_logs"
     "$FUXICTR_ROOT/dashboard/logs"
-    "$FUXICTR_STORAGE_BASE/db_backup"
+    "$FUXICTR_ROOT/db_backup"
 )
 
 for dir in "${dirs[@]}"; do
@@ -208,7 +211,6 @@ done
 
 # 设置权限
 sudo chown -R $REAL_USER:$REAL_USER "$FUXICTR_ROOT"
-sudo chown -R $REAL_USER:$REAL_USER "$FUXICTR_STORAGE_BASE"
 echo ""
 echo -e "${GREEN}✅ 目录权限已设置${NC}"
 
@@ -224,7 +226,6 @@ if [ -f "$CONFIG_FILE" ]; then
 
     # 使用 sed 替换配置文件中的路径
     sed -i.bak "s|/opt/fuxictr|$FUXICTR_ROOT|g" "$CONFIG_FILE"
-    sed -i.bak "s|/data/fuxictr/|$FUXICTR_STORAGE_BASE/|g" "$CONFIG_FILE"
     echo -e "${GREEN}✅ 配置文件已更新${NC}"
     echo -e "  原文件备份: ${CONFIG_FILE}.bak"
 fi
@@ -274,8 +275,8 @@ EnvironmentFile=$ENV_FILE
 ExecStart=$FUXICTR_VENV/bin/python -m fuxictr.workflow.service
 Restart=always
 RestartSec=10
-StandardOutput=append:$FUXICTR_STORAGE_BASE/workflow_logs/service.log
-StandardError=append:$FUXICTR_STORAGE_BASE/workflow_logs/service.log
+StandardOutput=append:$FUXICTR_ROOT/workflow_logs/service.log
+StandardError=append:$FUXICTR_ROOT/workflow_logs/service.log
 
 [Install]
 WantedBy=multi-user.target
@@ -334,7 +335,7 @@ echo ""
 echo -e "${BLUE}📋 配置信息：${NC}"
 echo "   代码目录:     $FUXICTR_ROOT"
 echo "   虚拟环境:     $FUXICTR_VENV"
-echo "   数据存储:     $FUXICTR_STORAGE_BASE"
+echo "   数据目录:     $FUXICTR_ROOT/{data,workflow_datasets,workflow_models,workflow_logs}"
 echo ""
 echo -e "${BLUE}🔌 Server 21（数据源）：${NC}"
 echo "   主机:         $SERVER_21_HOST"

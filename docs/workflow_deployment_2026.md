@@ -81,18 +81,24 @@ source ~/.bashrc
 #### 场景 1：标准部署（默认）
 
 ```
-/opt/fuxictr/          # 代码
-/data/fuxictr/         # 数据
+/opt/fuxictr/          # 代码和数据
+├── data/              # Dashboard 数据
+├── processed_data/    # Dashboard 处理后数据
+├── workflow_datasets/ # Workflow 数据集
+├── workflow_processed/# Workflow 处理后数据
+├── workflow_models/   # Workflow 模型
+├── workflow_logs/     # Workflow 日志
+└── db_backup/         # 数据库备份
 /opt/fuxictr_venv/     # 虚拟环境
 ```
 
-#### 场景 2：单分区部署
+#### 场景 2：用户目录部署
 
 ```bash
 # 修改 fuxictr_env.sh
 export FUXICTR_ROOT="$HOME/fuxictr"
 export FUXICTR_VENV="$HOME/fuxictr_venv"
-export FUXICTR_STORAGE_BASE="$HOME/fuxictr_data"
+# 数据目录将自动创建在 $HOME/fuxictr/ 下
 ```
 
 #### 场景 3：多磁盘部署
@@ -101,17 +107,20 @@ export FUXICTR_STORAGE_BASE="$HOME/fuxictr_data"
 # 修改 fuxictr_env.sh
 export FUXICTR_ROOT="/mnt/ssd/fuxictr"               # SSD - 代码
 export FUXICTR_VENV="$HOME/fuxictr_venv"               # Home - 虚拟环境
-export FUXICTR_STORAGE_BASE="/mnt/hdd1/fuxictr_data"  # HDD1 - 数据
+# 默认数据目录在 $FUXICTR_ROOT 下，如需分散存储，可单独指定：
 export FUXICTR_WORKFLOW_MODELS="/mnt/hdd2/fuxictr_models" # HDD2 - 模型
+export FUXICTR_WORKFLOW_DATASETS="/mnt/hdd1/fuxictr_datasets" # HDD1 - 数据
 ```
 
 #### 场景 4：完全自定义
 
 ```bash
 # 根据实际情况修改所有路径
-export FUXICTR_ROOT="/your/custom/path"
-export FUXICTR_VENV="/your/venv/path"
-export FUXICTR_STORAGE_BASE="/your/data/path"
+export FUXICTR_ROOT="/your/custom/path"           # 代码和数据根目录
+export FUXICTR_VENV="/your/venv/path"             # 虚拟环境
+# 可选：单独指定特定数据目录
+export FUXICTR_WORKFLOW_MODELS="/your/models/path"
+export FUXICTR_WORKFLOW_DATASETS="/your/data/path"
 ```
 
 ### 修改 systemd 服务使用环境变量
@@ -283,32 +292,40 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 
 ### 2.5 创建目录结构（重要！）
 
+**说明**：所有数据目录都创建在 FuxiCTR 代码目录下，无需单独的 `/data/fuxictr` 目录。
+
 ```bash
-# 创建所有必需的目录
-sudo mkdir -p /data/fuxictr
-sudo mkdir -p /data/fuxictr/{data,processed_data,workflow_datasets,workflow_processed,workflow_models,workflow_logs}
-sudo mkdir -p /data/fuxictr/dashboard_logs
-sudo mkdir -p /data/fuxictr/db_backup
+# 设置 FuxiCTR 根目录（根据实际情况修改）
+export FUXICTR_ROOT="/opt/fuxictr"
+
+# 创建所有必需的目录（在 fuxictr 目录下）
+mkdir -p ${FUXICTR_ROOT}/{data,processed_data,workflow_datasets,workflow_processed,workflow_models,workflow_logs}
+mkdir -p ${FUXICTR_ROOT}/db_backup
+mkdir -p ${FUXICTR_ROOT}/dashboard/logs
 
 # 设置权限
-sudo chown -R $USER:$USER /data/fuxictr
+sudo chown -R $USER:$USER ${FUXICTR_ROOT}
 
 # 验证目录结构
-tree -L 2 /data/fuxictr/
+tree -L 2 ${FUXICTR_ROOT}/
 ```
 
 **预期目录结构**：
 
 ```
-/data/fuxictr/
-├── data/                      # Dashboard 原始数据（只读）
-├── processed_data/            # Dashboard 处理后数据
-├── workflow_datasets/         # Workflow 原始数据（从 Server 21）
-├── workflow_processed/        # Workflow 处理后数据
-├── workflow_models/           # Workflow 模型
-├── workflow_logs/             # Workflow 日志
-├── dashboard_logs/            # Dashboard 应用日志
-└── db_backup/                 # 数据库备份
+/opt/fuxictr/                 # FuxiCTR 根目录
+├── fuxictr/                  # 源代码
+├── dashboard/                # 前端代码
+├── model_zoo/                # 模型代码
+├── data/                     # Dashboard 原始数据
+├── processed_data/           # Dashboard 处理后数据
+├── workflow_datasets/        # Workflow 原始数据（从 Server 21）
+├── workflow_processed/       # Workflow 处理后数据
+├── workflow_models/          # Workflow 模型
+├── workflow_logs/            # Workflow 日志
+├── db_backup/                # 数据库备份
+├── dashboard/logs/           # Dashboard 日志
+└── fuxictr_env.sh            # 环境变量配置
 ```
 
 ### 2.6 配置 SSH 访问到 Server 21
@@ -510,21 +527,21 @@ storage:
   dashboard_processed_root: "/opt/fuxictr/processed_data/"
 
   # Workflow 数据路径
-  workflow_datasets_root: "/data/fuxictr/workflow_datasets/"      # 原始数据（从 Server 21）
-  workflow_processed_root: "/data/fuxictr/workflow_processed/"    # 处理后数据（build_dataset）
+  workflow_datasets_root: "/opt/fuxictr/workflow_datasets/"      # 原始数据（从 Server 21）
+  workflow_processed_root: "/opt/fuxictr/workflow_processed/"    # 处理后数据（build_dataset）
 
   # Dashboard 模型路径
   dashboard_model_root: "/opt/fuxictr/model_zoo/"
 
   # Workflow 模型路径
-  workflow_model_root: "/data/fuxictr/workflow_models/"
+  workflow_model_root: "/opt/fuxictr/workflow_models/"
 
   # 日志路径
   dashboard_log_dir: "/opt/fuxictr/dashboard/logs/"
-  workflow_log_dir: "/data/fuxictr/workflow_logs/"
+  workflow_log_dir: "/opt/fuxictr/workflow_logs/"
 
   # 数据库备份
-  db_backup_dir: "/data/fuxictr/db_backup/"
+  db_backup_dir: "/opt/fuxictr/db_backup/"
 
 # ----------------------------------------------------------------------------
 # 数据传输配置
@@ -572,8 +589,8 @@ logging:
 | **Server 21 主机** | `servers.server_21.host` | `21.xxxxxx.com` | ⚠️ 必须替换 |
 | **SSH 用户名** | `servers.server_21.username` | `your_username` | ⚠️ 必须替换 |
 | **SSH 密钥路径** | `servers.server_21.key_path` | `~/.ssh/id_rsa` | ⚠️ 必须存在 |
-| **数据根目录** | `storage.*_root` | `/data/fuxictr/...` | ⚠️ 必须存在 |
-| **模型根目录** | `storage.*_model_root` | `/data/fuxictr/...` | ⚠️ 必须存在 |
+| **数据根目录** | `storage.*_root` | `/opt/fuxictr/...` | ⚠️ 必须存在 |
+| **模型根目录** | `storage.*_model_root` | `/opt/fuxictr/...` | ⚠️ 必须存在 |
 
 ---
 
@@ -608,12 +625,12 @@ ssh username@21.xxxxxx.com "ls -lh /tmp/fuxictr_staging/test_file.txt"
 ```bash
 # 检查所有目录是否存在且有写权限
 dirs=(
-    "/data/fuxictr/data"
-    "/data/fuxictr/processed_data"
-    "/data/fuxictr/workflow_datasets"
-    "/data/fuxictr/workflow_processed"
-    "/data/fuxictr/workflow_models"
-    "/data/fuxictr/workflow_logs"
+    "/opt/fuxictr/data"
+    "/opt/fuxictr/processed_data"
+    "/opt/fuxictr/workflow_datasets"
+    "/opt/fuxictr/workflow_processed"
+    "/opt/fuxictr/workflow_models"
+    "/opt/fuxictr/workflow_logs"
     "/opt/fuxictr/model_zoo"
 )
 
@@ -676,10 +693,10 @@ export WORKFLOW_CONFIG_PATH=/opt/fuxictr/fuxictr/workflow/config.yaml
 
 # 启动后端服务（端口 8001）
 nohup python -m fuxictr.workflow.service \
-    > /data/fuxictr/workflow_logs/service.log 2>&1 &
+    > /opt/fuxictr/workflow_logs/service.log 2>&1 &
 
 # 查看日志
-tail -f /data/fuxictr/workflow_logs/service.log
+tail -f /opt/fuxictr/workflow_logs/service.log
 
 # 验证服务运行
 curl http://localhost:8001/api/health
@@ -724,8 +741,8 @@ Environment="WORKFLOW_CONFIG_PATH=/opt/fuxictr/fuxictr/workflow/config.yaml"
 ExecStart=/opt/fuxictr_venv/bin/python -m fuxictr.workflow.service
 Restart=always
 RestartSec=10
-StandardOutput=append:/data/fuxictr/workflow_logs/service.log
-StandardError=append:/data/fuxictr/workflow_logs/service.log
+StandardOutput=append:/opt/fuxictr/workflow_logs/service.log
+StandardError=append:/opt/fuxictr/workflow_logs/service.log
 
 [Install]
 WantedBy=multi-user.target
@@ -810,10 +827,10 @@ ssh -i ~/.ssh/id_rsa username@21.xxxxxx.com
 **解决**:
 ```bash
 # 修改目录所有者
-sudo chown -R $USER:$USER /data/fuxictr
+sudo chown -R $USER:$USER /opt/fuxictr
 
 # 修改目录权限
-sudo chmod -R 755 /data/fuxictr
+sudo chmod -R 755 /opt/fuxictr
 ```
 
 ### Q3: PyTorch CUDA 不可用
@@ -841,7 +858,7 @@ pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
 **解决**:
 ```bash
 # 查看详细日志
-tail -100 /data/fuxictr/workflow_logs/service.log
+tail -100 /opt/fuxictr/workflow_logs/service.log
 
 # 手动启动查看错误
 cd /opt/fuxictr
@@ -871,13 +888,13 @@ python -m fuxictr.workflow.service
 
 ```bash
 # 查看磁盘使用
-df -h /data/fuxictr
+df -h /opt/fuxictr
 
 # 清理旧的 Workflow 日志（保留最近 30 天）
-find /data/fuxictr/workflow_logs -name "*.log" -mtime +30 -delete
+find /opt/fuxictr/workflow_logs -name "*.log" -mtime +30 -delete
 
 # 清理旧的数据库备份（保留最近 30 天）
-find /data/fuxictr/db_backup -name "*.db.bak" -mtime +30 -delete
+find /opt/fuxictr/db_backup -name "*.db.bak" -mtime +30 -delete
 
 # 查看服务资源占用
 ps aux | grep fuxictr
