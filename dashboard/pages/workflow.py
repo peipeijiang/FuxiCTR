@@ -736,14 +736,15 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
             padding-bottom: 8px;
             border-bottom: 1px solid #3e3e3e;
         ">
-            <span style="color: #569cd6; font-weight: 600;">📡 实时日志流</span>
+            <span style="color: #94a3b8; font-weight: 600;">日志输出</span>
             <span id="ws-status-{task_id}" style="
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 11px;
+                padding: 4px 10px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 500;
                 background: #3e3e3e;
                 color: #808080;
-            ">未连接</span>
+            ">等待连接</span>
         </div>
         <div id="log-content-{task_id}" style="
             line-height: 1.6;
@@ -821,9 +822,9 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
                 const percent = data.data?.percent || 0;
                 const message = data.data?.message || '';
                 logLine = `<div style="color: {{color}};">
-                    <span style="color: #808080;">[${{timestamp}}]</span>
-                    <span style="color: #569cd6;">[{{step}}]</span>
-                    <span style="color: #4ec9b0;">⏳ 进度: ${{current}}/${{total}} (${{percent}}%)</span>
+                    <span style="color: #64748b;">[${{timestamp}}]</span>
+                    <span style="color: #60a5fa;">[{{step}}]</span>
+                    <span style="color: #4ec9b0;">进度: ${{current}}/${{total}} (${{percent}}%)</span>
                     ${{message ? ' - ' + escapeHtml(message) : ''}}
                 </div>`;
             }} else if (msgType === 'metric') {{
@@ -831,22 +832,22 @@ def render_websocket_logs(container, task_id: int, api_base: str, auto_refresh: 
                 const value = data.data?.value || '';
                 const unit = data.data?.unit || '';
                 logLine = `<div style="color: {{color}};">
-                    <span style="color: #808080;">[${{timestamp}}]</span>
-                    <span style="color: #569cd6;">[{{step}}]</span>
-                    <span style="color: #dcdcaa;">📊 ${{name}}: ${{value}}${{unit}}</span>
+                    <span style="color: #64748b;">[${{timestamp}}]</span>
+                    <span style="color: #60a5fa;">[{{step}}]</span>
+                    <span style="color: #dcdcaa;">${{name}}: ${{value}}${{unit}}</span>
                 </div>`;
             }} else if (msgType === 'error') {{
                 const message = escapeHtml(data.data?.message || '');
                 logLine = `<div style="color: {{color}};">
-                    <span style="color: #808080;">[${{timestamp}}]</span>
-                    <span style="color: #569cd6;">[{{step}}]</span>
-                    <span style="color: #f14c4c;">❌ 错误: {{message}}</span>
+                    <span style="color: #64748b;">[${{timestamp}}]</span>
+                    <span style="color: #60a5fa;">[{{step}}]</span>
+                    <span style="color: #f14c4c;">错误: {{message}}</span>
                 </div>`;
             }} else if (msgType === 'complete') {{
                 logLine = `<div style="color: {{color}};">
-                    <span style="color: #808080;">[${{timestamp}}]</span>
-                    <span style="color: #569cd6;">[{{step}}]</span>
-                    <span style="color: #4ec9b0;">✅ 完成</span>
+                    <span style="color: #64748b;">[${{timestamp}}]</span>
+                    <span style="color: #60a5fa;">[{{step}}]</span>
+                    <span style="color: #4ec9b0;">完成</span>
                 </div>`;
             }} else if (msgType === 'status') {{
                 logLine = `<div style="color: {{color}};">
@@ -926,60 +927,114 @@ if task_id:
     response = requests.get(f"{API_BASE}/api/workflow/tasks/{task_id}")
 
     if response.status_code != 200:
-        st.error("任务不存在")
-        if st.button("返回任务列表"):
+        st.markdown("""
+            <div style="
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                min-height: 400px;
+                background: white;
+                border-radius: 12px;
+                border: 1px solid #e2e8f0;
+            ">
+                <h3 style="color: #1e293b; margin: 0 0 8px 0;">任务不存在</h3>
+                <p style="color: #64748b; margin: 0 0 16px 0;">请检查任务ID是否正确</p>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("返回任务列表", use_container_width=True):
             st.query_params.clear()
             st.rerun()
     else:
         task = response.json()
 
-        # Header with back button
-        col_back, col_title = st.columns([1, 5])
-        with col_back:
-            if st.button("←", key="back_btn", help="返回任务列表"):
-                st.query_params.clear()
-                st.rerun()
-        with col_title:
-            st.markdown(f"""
-                <h1 style="font-size: 22px; font-weight: 600; color: #111827; margin: 0 0 8px 0;">
-                    {task.get('name', '未命名任务')}
-                </h1>
-            """, unsafe_allow_html=True)
-
-        # Task metadata row (status, time, user, model)
+        # ========== HEADER ==========
         st.markdown(f"""
             <div style="
                 display: flex;
+                justify-content: space-between;
                 align-items: center;
-                gap: 20px;
-                padding: 10px 0;
-                border-bottom: 1px solid #e5e7eb;
-                margin-bottom: 20px;
+                margin-bottom: 24px;
+                padding: 20px 24px;
+                background: white;
+                border-radius: 12px;
+                border: 1px solid #e2e8f0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
             ">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 13px; color: #6b7280;">状态</span>
-                    {render_status_badge(task['status'])}
+                <div>
+                    <button onclick="window.location.href='?'" style="
+                        background: none;
+                        border: none;
+                        color: #64748b;
+                        font-size: 14px;
+                        cursor: pointer;
+                        padding: 8px 0;
+                        display: flex;
+                        align-items: center;
+                        gap: 6px;
+                        margin-bottom: 12px;
+                    ">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 12H5M12 19l-7-7 7-7"/>
+                        </svg>
+                        返回列表
+                    </button>
+                    <h1 style="font-size: 24px; font-weight: 600; color: #0f172a; margin: 0;">
+                        {task.get('name', '未命名任务')}
+                    </h1>
                 </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 13px; color: #6b7280;">创建</span>
-                    <span style="font-size: 13px; color: #374151;">{task['created_at'][:16] if task['created_at'] else '-'}</span>
-                </div>
-                {f'''<div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 13px; color: #6b7280;">用户</span>
-                    <span style="font-size: 13px; color: #374151;">{task.get('user')}</span>
-                </div>''' if task.get('user') else ''}
-                {f'''<div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 13px; color: #6b7280;">模型</span>
-                    <span style="font-size: 13px; color: #374151;">{task.get('model')}</span>
-                </div>''' if task.get('model') else ''}
-                {f'''<div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 13px; color: #6b7280;">Exp ID</span>
-                    <span style="font-size: 13px; color: #374151;">{task.get('experiment_id')}</span>
-                </div>''' if task.get('experiment_id') else ''}
+                {render_status_badge(task.get('status', 'unknown'))}
             </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        # ========== INFO CARDS ==========
+        st.markdown("""
+            <div style="
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+                margin-bottom: 24px;
+            ">
+        """, unsafe_allow_html=True)
+
+        # Helper function for info cards
+        def render_info_card(label: str, value: str, icon: str = ""):
+            icon_html = f"<div style='font-size: 24px; margin-bottom: 8px;'>{icon}</div>" if icon else ""
+            return f"""
+                <div style="
+                    padding: 16px;
+                    background: white;
+                    border-radius: 10px;
+                    border: 1px solid #e2e8f0;
+                    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+                ">
+                    {icon_html}
+                    <div style="font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 4px;">{label}</div>
+                    <div style="font-size: 14px; color: #1e293b; font-weight: 600;">{value if value else '-'}</div>
+                </div>
+            """
+
+        st.markdown(render_info_card("创建时间", task.get('created_at', '')[:16] if task.get('created_at') else ''), unsafe_allow_html=True)
+        st.markdown(render_info_card("用户", task.get('user', '')), unsafe_allow_html=True)
+        st.markdown(render_info_card("模型", task.get('model', '')), unsafe_allow_html=True)
+        st.markdown(render_info_card("实验ID", task.get('experiment_id', '')), unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ========== CONFIGURATION FORM ==========
+        st.markdown("""
+            <div style="
+                padding: 24px;
+                background: white;
+                border-radius: 12px;
+                border: 1px solid #e2e8f0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                margin-bottom: 24px;
+            ">
+                <h3 style="font-size: 18px; font-weight: 600; color: #0f172a; margin: 0 0 20px 0;">
+                    任务配置
+                </h3>
+        """, unsafe_allow_html=True)
 
         # Progress Metrics Section
         st.subheader("执行进度")
@@ -1302,27 +1357,138 @@ if task_id:
                 else:
                     st.info("配置已保存（功能开发中）")
 
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        # Real-time logs section
-        st.subheader("实时日志")
+        # ========== PROGRESS SECTION ==========
+        st.markdown("""
+            <div style="
+                padding: 24px;
+                background: white;
+                border-radius: 12px;
+                border: 1px solid #e2e8f0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                margin-bottom: 24px;
+            ">
+                <h3 style="font-size: 18px; font-weight: 600; color: #0f172a; margin: 0 0 20px 0;">
+                    执行进度
+                </h3>
+        """, unsafe_allow_html=True)
 
-        # Show logs for current task or running task
-        log_task_id = st.session_state.get("running_task_id", task_id)
+        # Fetch progress
+        progress_response = requests.get(f"{API_BASE}/api/workflow/tasks/{task_id}/progress")
+        if progress_response.status_code == 200:
+            progress = progress_response.json()
+
+            # Progress bar
+            current_step = progress.get('current_step', 0)
+            total_steps = progress.get('total_steps', 5)
+            progress_percent = int((current_step / total_steps) * 100) if total_steps > 0 else 0
+
+            st.markdown(f"""
+                <div style="margin-bottom: 24px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-size: 13px; color: #64748b; font-weight: 500;">整体进度</span>
+                        <span style="font-size: 14px; font-weight: 600; color: #0f172a;">{current_step}/{total_steps} 步骤</span>
+                    </div>
+                    <div style="
+                        width: 100%;
+                        height: 8px;
+                        background: #e2e8f0;
+                        border-radius: 6px;
+                        overflow: hidden;
+                    ">
+                        <div style="
+                            width: {progress_percent}%;
+                            height: 100%;
+                            background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+                            border-radius: 6px;
+                            transition: width 0.3s ease;
+                        "></div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # Step progress - modern design without emoji
+            steps_data = progress.get('steps', [])
+            if steps_data:
+                st.markdown('<div style="display: flex; gap: 8px; flex-wrap: wrap;">', unsafe_allow_html=True)
+
+                for step_data in steps_data:
+                    step_status = step_data.get('status', 'pending')
+                    step_name = step_data.get('name', '')
+                    step_name_cn = get_step_name_chinese(step_name)
+
+                    # Determine colors based on status
+                    if step_status == 'completed':
+                        bg_color = "#dcfce7"
+                        text_color = "#166534"
+                        border_color = "#86efac"
+                        status_text = "完成"
+                    elif step_status == 'running':
+                        bg_color = "#dbeafe"
+                        text_color = "#1e40af"
+                        border_color = "#93c5fd"
+                        status_text = "运行中"
+                    elif step_status == 'failed':
+                        bg_color = "#fee2e2"
+                        text_color = "#991b1b"
+                        border_color = "#fca5a5"
+                        status_text = "失败"
+                    else:
+                        bg_color = "#f1f5f9"
+                        text_color = "#475569"
+                        border_color = "#cbd5e1"
+                        status_text = "等待"
+
+                    st.markdown(f"""
+                        <div style="
+                            flex: 1;
+                            min-width: 140px;
+                            padding: 12px 16px;
+                            background: {bg_color};
+                            border: 1px solid {border_color};
+                            border-radius: 8px;
+                        ">
+                            <div style="font-size: 12px; color: {text_color}; font-weight: 600; margin-bottom: 4px;">
+                                {step_name_cn}
+                            </div>
+                            <div style="font-size: 11px; color: #64748b;">
+                                {status_text}
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ========== LOGS SECTION ==========
+        st.markdown("""
+            <div style="
+                padding: 24px;
+                background: #1e293b;
+                border-radius: 12px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            ">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h3 style="font-size: 18px; font-weight: 600; color: #f8fafc; margin: 0;">
+                        实时日志
+                    </h3>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+        """, unsafe_allow_html=True)
 
         # Auto-refresh toggle
-        col_refresh, col_status = st.columns([3, 1])
-        with col_refresh:
-            auto_refresh = st.checkbox("自动刷新", value=True, key=f"auto_refresh_{task_id}")
-        with col_status:
-            if st.button("刷新", key=f"refresh_{task_id}"):
-                st.rerun()
+        auto_refresh = st.checkbox("自动刷新", value=True, key=f"auto_refresh_{task_id}")
+        if st.button("刷新", key=f"refresh_{task_id}"):
+            st.rerun()
+
+        st.markdown("</div></div>", unsafe_allow_html=True)
 
         # WebSocket Real-time Log Component
         ws_logs_placeholder = st.empty()
 
         # Render WebSocket log viewer
-        render_websocket_logs(ws_logs_placeholder, log_task_id, API_BASE, auto_refresh)
+        render_websocket_logs(ws_logs_placeholder, task_id, API_BASE, auto_refresh)
 
 
 # ========== TASK LIST VIEW ==========
