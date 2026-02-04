@@ -42,7 +42,7 @@ from .WideDeep.WideDeep_torch.src import WideDeep
 from .xDeepFM.src import xDeepFM
 from .PEPNet.src import PPNet
 from .TransAct.src import TransAct
-from .multitask import ShareBottom, MMoE, PLE
+from .multitask import ShareBottom, MMoE, PLE, APG_AITMV2
 from .EulerNet.src import EulerNet
 from .WuKong.src import WuKong
 from .GDCN.src import GDCN
