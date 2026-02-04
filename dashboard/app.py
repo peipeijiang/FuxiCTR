@@ -14,6 +14,7 @@ import copy
 import psutil
 import re
 import socket
+import uuid
 from datetime import datetime
 from code_editor import code_editor
 from collections import OrderedDict
@@ -934,8 +935,11 @@ def _render_label_col_section(entry, editor_key, selected_name, data=None, buffe
 
     # Session state key for pending deletions
     pending_del_key = f"{editor_key}_{selected_name}_pending_deletions"
+    uid_key = f"{editor_key}_{selected_name}_label_col_uids"
     if pending_del_key not in st.session_state:
         st.session_state[pending_del_key] = []
+    if uid_key not in st.session_state:
+        st.session_state[uid_key] = []
 
     label_col = entry.get("label_col")
 
@@ -948,6 +952,16 @@ def _render_label_col_section(entry, editor_key, selected_name, data=None, buffe
     elif isinstance(label_col, list):
         items = list(label_col)
 
+    # 为每一行生成稳定 uid，用于 Streamlit widget keys，避免删除/插入导致 index 变化而错位
+    uids = st.session_state[uid_key]
+    if not isinstance(uids, list):
+        uids = []
+    if len(uids) < len(items):
+        uids = list(uids) + [uuid.uuid4().hex for _ in range(len(items) - len(uids))]
+    elif len(uids) > len(items):
+        uids = list(uids[: len(items)])
+    st.session_state[uid_key] = uids
+
     # 扫描所有 keys
     all_keys = ["name", "dtype"]
     for item in items:
@@ -959,12 +973,16 @@ def _render_label_col_section(entry, editor_key, selected_name, data=None, buffe
     st.markdown("##### label_col")
 
     new_items = []
-    deleted_indices = st.session_state[pending_del_key].copy()  # 从session state初始化
+    deleted_uids = set(st.session_state[pending_del_key] or [])  # 允许存 uid
     
     # 渲染列表
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
             new_items.append(item)
+            continue
+
+        row_uid = uids[idx]
+        if row_uid in deleted_uids:
             continue
             
         cols = st.columns(len(all_keys) + 1, vertical_alignment="bottom")
@@ -977,7 +995,7 @@ def _render_label_col_section(entry, editor_key, selected_name, data=None, buffe
                 new_val = st.text_input(
                     k, 
                     val_text, 
-                    key=f"{editor_key}_{selected_name}_label_{idx}_{k}",
+                    key=f"{editor_key}_{selected_name}_label_{row_uid}_{k}",
                     label_visibility="visible" if idx == 0 else "collapsed",
                     placeholder=k
                 )
@@ -1001,33 +1019,19 @@ def _render_label_col_section(entry, editor_key, selected_name, data=None, buffe
                 </style>
                 <div class='del_marker' style='display:none'></div>
                 """, unsafe_allow_html=True)
-            if st.button("✕", key=f"{editor_key}_{selected_name}_label_del_{idx}", help="删除此任务"):
-                st.session_state[pending_del_key].append(idx)
-                # 将当前 updated_item 添加到 new_items（如果尚未添加）
-                # 注意：new_items.append(updated_item) 在按钮之后，但我们需要在计算前包含它
-                current_new_items = list(new_items)  # 当前 new_items 不包含当前项
-                current_new_items.append(updated_item)
-                # 计算更新后的 final_items
-                updated_final_items = [item for i, item in enumerate(current_new_items) if i not in st.session_state[pending_del_key]]
-                # 更新 entry
-                if not updated_final_items:
-                    entry["label_col"] = []
-                elif is_single_structure and len(updated_final_items) == 1:
-                    entry["label_col"] = updated_final_items[0]
-                else:
-                    entry["label_col"] = updated_final_items
-                # 保存到 buffer（如果提供了 data 和 buffer_key）
-                if data is not None and buffer_key is not None:
-                    # 更新 data 中的 entry（entry 已经是 data[selected_name] 的引用，但为了安全）
-                    data[selected_name] = entry
-                    _set_buffered_content(buffer_key, _yaml_dump(data))
-                    st.toast("已删除任务，正在刷新页面...", icon="✅")
+            if st.button("✕", key=f"{editor_key}_{selected_name}_label_del_{row_uid}", help="删除此任务"):
+                # 只记录要删除的 uid，下一次 rerun 会统一重建并保存（避免“只处理到当前行”导致删掉下面所有行）
+                st.session_state[pending_del_key] = list(deleted_uids | {row_uid})
                 st.rerun()
         
         new_items.append(updated_item)
-    
-    # 过滤被删除项
-    final_items = [item for i, item in enumerate(new_items) if i not in deleted_indices]
+
+    # 同步 uid：移除被删除项
+    final_uids = [u for u in uids if u not in deleted_uids]
+    st.session_state[uid_key] = final_uids
+
+    # 已经在渲染阶段跳过 deleted_uids，这里 new_items 就是最终 items
+    final_items = list(new_items)
 
     # 更新 entry
     if not final_items:
@@ -1043,6 +1047,7 @@ def _render_label_col_section(entry, editor_key, selected_name, data=None, buffe
         # 添加新项目到 final_items
         updated_final_items = list(final_items)  # 创建副本
         updated_final_items.append(OrderedDict({"name": "new_label", "dtype": "float"}))
+        st.session_state[uid_key] = list(st.session_state[uid_key]) + [uuid.uuid4().hex]
 
         # 更新 entry
         if not updated_final_items:
@@ -1521,10 +1526,13 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
     # Session state keys for pending additions and deletions
     pending_add_key = f"{widget_key}_pending_add"
     pending_del_key = f"{widget_key}_pending_del"
+    uid_key = f"{widget_key}_item_uids"
     if pending_add_key not in st.session_state:
         st.session_state[pending_add_key] = []
     if pending_del_key not in st.session_state:
         st.session_state[pending_del_key] = []
+    if uid_key not in st.session_state:
+        st.session_state[uid_key] = []
 
     # 1. 统一正规化为 List 进行编辑
     # is_single_structure 标记最初是否是非列表形式（String 或 单Dict），
@@ -1541,7 +1549,8 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
     elif isinstance(value, list) and value:
         # 只要列表里是 String 或 Dict 就认为是合法 Loss 列表
         if all(isinstance(x, (str, dict, OrderedDict)) for x in value):
-            items = value
+            # 用副本避免在后续 extend / 编辑过程中意外修改原始对象
+            items = list(value)
         else:
             return _render_yaml_field(label, value, widget_key)
     elif value is None:
@@ -1556,6 +1565,16 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
     if pending_items:
         items.extend(pending_items)
         st.session_state[pending_add_key] = []  # 清空 pending 项
+
+    # 为每一行生成稳定的 uid，用于 Streamlit widget keys，避免删除/插入导致 index 变化而“错删/错位”
+    uids = st.session_state[uid_key]
+    if not isinstance(uids, list):
+        uids = []
+    if len(uids) < len(items):
+        uids = list(uids) + [uuid.uuid4().hex for _ in range(len(items) - len(uids))]
+    elif len(uids) > len(items):
+        uids = list(uids[: len(items)])
+    st.session_state[uid_key] = uids
 
     st.markdown(f"##### {label}")
 
@@ -1575,6 +1594,8 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
         if idx in pending_deletions:
             continue
 
+        row_uid = uids[idx]
+
         cols = st.columns([0.3, 0.6, 0.1], vertical_alignment="center")
         
         # 解析当前项：支持 String 或 Dict 混合
@@ -1589,22 +1610,34 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
              current_params = None
         
         # Name field
-        new_name = cols[0].text_input("Name", current_name, label_visibility="collapsed", key=f"{widget_key}_{idx}_name", placeholder="e.g. binary_crossentropy")
+        new_name = cols[0].text_input(
+            "Name",
+            current_name,
+            label_visibility="collapsed",
+            key=f"{widget_key}_{row_uid}_name",
+            placeholder="e.g. binary_crossentropy",
+        )
         
         # Params field
         params_str = _yaml_dump(current_params).strip() if current_params else ""
-        new_params_str = cols[1].text_area("Params", params_str, height=68, label_visibility="collapsed", key=f"{widget_key}_{idx}_params", placeholder="参数 (可选)")
+        new_params_str = cols[1].text_area(
+            "Params",
+            params_str,
+            height=68,
+            label_visibility="collapsed",
+            key=f"{widget_key}_{row_uid}_params",
+            placeholder="参数 (可选)",
+        )
         
         # Delete button
-        if cols[2].button("✕", key=f"{widget_key}_{idx}_del"):
+        if cols[2].button("✕", key=f"{widget_key}_{row_uid}_del"):
             st.session_state[pending_del_key].append(idx)
             # 立即保存到 buffer
             if data is not None and buffer_key is not None and selected_name is not None:
-                # 合并 pending_add_key 中的项到临时 items 以计算当前值
-                temp_items = list(items)
-                temp_items.extend(st.session_state[pending_add_key])
-                # 过滤 pending deletions（包括刚刚添加的）
-                temp_final_items = [item for i, item in enumerate(temp_items) if i not in st.session_state[pending_del_key]]
+                # items 已经合并了 pending additions，这里只需要基于 pending_del_key 过滤
+                temp_final_items = [it for i, it in enumerate(items) if i not in st.session_state[pending_del_key]]
+                temp_final_uids = [u for i, u in enumerate(uids) if i not in st.session_state[pending_del_key]]
+                st.session_state[uid_key] = temp_final_uids
                 # 计算最终值
                 if is_single_structure:
                     if len(temp_final_items) == 1:
@@ -1650,6 +1683,7 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
     add_cols = st.columns([0.3, 0.35, 0.35])
     if add_cols[0].button("✚ BCE", key=f"{widget_key}_add_bce", help="添加 binary_crossentropy", use_container_width=True):
         st.session_state[pending_add_key].append("binary_crossentropy")
+        st.session_state[uid_key] = list(st.session_state[uid_key]) + [uuid.uuid4().hex]
         # 立即保存到 buffer
         if data is not None and buffer_key is not None and selected_name is not None:
             # 合并 pending_add_key 中的项到临时 items 以计算当前值
@@ -1678,6 +1712,7 @@ def _render_loss_section(label, value, widget_key, data=None, buffer_key=None, s
         st.rerun()
     if add_cols[1].button("✚ FocalLoss", key=f"{widget_key}_add_focal", help="添加 FocalLoss", use_container_width=True):
         st.session_state[pending_add_key].append(OrderedDict([("name", "FocalLoss"), ("params", OrderedDict([("gamma", 2.0), ("alpha", 0.25)]))]))
+        st.session_state[uid_key] = list(st.session_state[uid_key]) + [uuid.uuid4().hex]
         # 立即保存到 buffer
         if data is not None and buffer_key is not None and selected_name is not None:
             # 合并 pending_add_key 中的项到临时 items 以计算当前值
