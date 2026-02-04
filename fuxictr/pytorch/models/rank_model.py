@@ -31,7 +31,7 @@ except ImportError:
 from fuxictr.pytorch.layers import FeatureEmbeddingDict
 from fuxictr.metrics import evaluate_metrics
 from fuxictr.pytorch.torch_utils import get_device, get_optimizer, get_loss, get_regularizer, distributed_barrier
-from fuxictr.utils import Monitor, not_in_whitelist
+from fuxictr.utils import Monitor, not_in_whitelist, print_to_list
 from tqdm import tqdm
 
 

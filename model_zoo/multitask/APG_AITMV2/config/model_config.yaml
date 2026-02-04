@@ -55,6 +55,7 @@ APG_AITMV2_test:
     # Cascaded transfer (funnel-friendly)
     transfer_type: gated_residual  # gated_residual | attn
     transfer_gate_hidden_units: [64]
+    transfer_gate_net_type: dnn  # dnn | apg (apg 会让 transfer gate 显式受 condition_z/domain 影响)
     use_prev_logit: True
     detach_prev_rep: True
     detach_prev_logit: True
