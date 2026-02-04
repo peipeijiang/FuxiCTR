@@ -405,8 +405,22 @@ class APG_AITMV2(MultiTaskModel):
         input_dim = feature_map.sum_emb_out_dim()
         if not self.condition_participate_bottom:
             for feature in self.condition_features:
-                if feature in feature_map.features:
-                    input_dim -= feature_map.features[feature]["emb_output_dim"]
+                if feature not in feature_map.features:
+                    continue
+                feature_spec = feature_map.features[feature]
+                # 与 FeatureMap.sum_emb_out_dim 的口径保持一致：meta 特征不参与 embedding 拼接
+                if feature_spec.get("type") == "meta":
+                    continue
+                emb_out_dim = feature_spec.get(
+                    "emb_output_dim",
+                    feature_spec.get("embedding_dim", getattr(feature_map, "default_emb_dim", None) or embedding_dim),
+                )
+                if emb_out_dim is None:
+                    raise KeyError(
+                        f"Cannot infer embedding output dim for condition feature={feature}. "
+                        "Please set emb_output_dim or embedding_dim in feature_map/feature_specs."
+                    )
+                input_dim -= int(emb_out_dim)
 
         # ========= CGC / PLE Bottom（可堆叠多层） =========
         # 第一层输入维度为 input_dim；后续层输入维度为 expert_hidden_units[-1]。
