@@ -99,7 +99,7 @@ if __name__ == '__main__':
             fw.write(' {},[command] python {},[exp_id] {},[dataset_id] {},[train] {},[val] {},[test] {}\n' \
                 .format(datetime.now().strftime('%Y%m%d-%H%M%S'), 
                         ' '.join(sys.argv), experiment_id, params['dataset_id'],
-                        "N.A.", print_to_list(valid_result), print_to_list(test_result)))
+                        print_to_list(train_result), print_to_list(valid_result), print_to_list(test_result)))
     if distributed and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()

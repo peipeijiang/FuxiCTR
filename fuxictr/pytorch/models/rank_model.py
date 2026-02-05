@@ -221,6 +221,7 @@ class BaseModel(nn.Module):
         self._total_steps = 0
         self._batch_index = 0
         self._epoch_index = 0
+        self._final_train_logs = None  # 保存训练完成后的train评估结果
         if self._eval_steps is None:
             self._eval_steps = self._steps_per_epoch
 
@@ -232,13 +233,15 @@ class BaseModel(nn.Module):
             if self._stop_training:
                 break
             else:
-                # 每个 epoch 结束后评估训练集和验证集指标
+                # 每个 epoch 结束后评估验证集指标
                 self._evaluate_epoch_end()
                 self._log("************ Epoch={} end ************".format(self._epoch_index + 1))
         self._log("Training finished.")
         self._distributed_barrier()
         self._log("Load best model: {}".format(self.checkpoint))
         self.load_weights(self.checkpoint)
+        # 训练完成后评估一次train数据集
+        self._final_train_logs = self._evaluate_train_final()
         self._distributed_barrier()
 
     def checkpoint_and_earlystop(self, logs, min_delta=1e-6):
@@ -273,12 +276,8 @@ class BaseModel(nn.Module):
         self.train()
 
     def _evaluate_epoch_end(self):
-        """在每个 epoch 结束后评估训练集和验证集指标"""
+        """在每个 epoch 结束后评估验证集指标"""
         self._log('Evaluation @epoch {} end:'.format(self._epoch_index + 1))
-
-        # 评估训练集指标
-        train_logs = self.evaluate(self._train_gen, metrics=self._monitor.get_metrics())
-        self._log("Train metrics: " + print_to_list(train_logs))
 
         # 评估验证集指标
         val_logs = self.evaluate(self.valid_gen, metrics=self._monitor.get_metrics())
@@ -290,12 +289,21 @@ class BaseModel(nn.Module):
 
         # 记录到 TensorBoard
         if self.writer:
-            for metric_name, metric_value in train_logs.items():
-                self.writer.add_scalar(f'epoch_train/{metric_name}', metric_value, self._epoch_index)
             for metric_name, metric_value in val_logs.items():
                 self.writer.add_scalar(f'epoch_val/{metric_name}', metric_value, self._epoch_index)
 
         self.train()  # 恢复训练模式
+
+    def _evaluate_train_final(self):
+        """训练完成后评估训练集指标"""
+        self._log('Final evaluation on train set:')
+        train_logs = self.evaluate(self._train_gen, metrics=self.validation_metrics)
+        self._log("Train metrics: " + print_to_list(train_logs))
+        return train_logs
+
+    def get_final_train_result(self):
+        """获取训练完成后的train评估结果"""
+        return self._final_train_logs
 
     def train_step(self, batch_data):
         self.optimizer.zero_grad()

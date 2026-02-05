@@ -362,6 +362,12 @@ def run_train(model, feature_map, params, args, workflow_logger=None):
         logging.info('****** Validation evaluation ******')
     # 训练后立刻对 valid 做一次评估，作为最终写入 CSV 的结果。
     valid_result = model.evaluate(valid_gen)
+
+    # 获取训练完成后的 train 评估结果
+    train_result = {}
+    if hasattr(model, 'get_final_train_result') and model.get_final_train_result() is not None:
+        train_result = model.get_final_train_result()
+
     del train_gen, valid_gen
     gc.collect()
 
@@ -395,7 +401,7 @@ def run_train(model, feature_map, params, args, workflow_logger=None):
             fw.write(' {},[command] python {},[exp_id] {},[dataset_id] {},[train] {},[val] {},[test] {}\n' \
                 .format(datetime.now().strftime('%Y%m%d-%H%M%S'),
                         ' '.join(sys.argv), args['expid'], params['dataset_id'],
-                        "N.A.", print_to_list(valid_result), print_to_list(test_result)))
+                        print_to_list(train_result), print_to_list(valid_result), print_to_list(test_result)))
 
 
 def get_completed_files(output_dir):
