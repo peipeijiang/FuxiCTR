@@ -52,7 +52,9 @@ class FeatureProcessor(object):
                     import yaml
                     with open(config_path, 'r') as f:
                         config = yaml.safe_load(f)
-                        pm = PathManager(config)
+                        # 传入配置文件的绝对路径，用于正确解析相对路径
+                        config_abs_path = os.path.abspath(config_path)
+                        pm = PathManager(config, config_file_path=config_abs_path)
                         processed_root = pm.dashboard_processed_root
                         logging.info(f"Using processed_root from config: {processed_root}")
             except Exception as e:
@@ -138,15 +140,20 @@ class FeatureProcessor(object):
         schema = ddf.collect_schema()
         col_names = schema.names()
         dtype_map = {n: d for n, d in zip(schema.names(), schema.dtypes())}
+        # 创建label列集合用于快速判断
+        label_names = {col["name"] for col in self.label_cols}
         for col in all_cols:
             name = col["name"]
+            is_label = name in label_names
             fill_na = None
             if col["dtype"] in ["str", str]:
                 fill_na = col.get("fill_na", "")
             elif col["dtype"] in ["int", int]:
                 fill_na = col.get("fill_na", 0)
             elif col["dtype"] in ["float", float]:
-                fill_na = col.get("fill_na", 0.0)
+                # Label列自动使用-1填充NaN，其他特征列使用0填充
+                default_fill_na = -1 if is_label else 0.0
+                fill_na = col.get("fill_na", default_fill_na)
             col_exist = name in col_names
             if (fill_na is not None) and col_exist:
                 ddf = ddf.with_columns(pl.col(name).fill_null(fill_na))
