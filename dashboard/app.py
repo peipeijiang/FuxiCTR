@@ -203,6 +203,7 @@ st.markdown("""
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MODEL_ZOO_DIR = os.path.join(ROOT_DIR, "model_zoo")
 DATA_DIR = os.path.join(ROOT_DIR, "data")
+PROCESSED_DATA_DIR = os.path.join(ROOT_DIR, "processed_data")  # Dashboard处理后的数据目录
 LOG_DIR = os.path.join(ROOT_DIR, "dashboard", "logs")
 TASK_STATE_DIR = os.path.join(ROOT_DIR, "dashboard", "state", "tasks")
 HISTORY_DIR = os.path.join(ROOT_DIR, "dashboard", "state", "history")
@@ -211,6 +212,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(TASK_STATE_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(USER_CONFIG_DIR, exist_ok=True)
+os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)  # 确保processed_data目录存在
 
 # --- Task Management Helpers ---
 def cleanup_stale_tasks():
@@ -3097,6 +3099,7 @@ if selected_model:
 
                     ds_params = {
                         'data_root': ds_root,
+                        'processed_root': str(PROCESSED_DATA_DIR),  # 使用processed_data目录存放处理后的数据
                         'data_format': 'parquet',
                         'train_data': ds_train,
                         'valid_data': ds_valid,
@@ -3131,8 +3134,18 @@ if selected_model:
                         
                     st.toast(f"使用数据集覆盖：{ds_id} (继承自 {original_ds_id})", icon="⚙️")
                 else:
-                    # Copy existing dataset config
+                    # Copy existing dataset config and ensure processed_root is set
                     shutil.copy(dataset_config_path, os.path.join(temp_config_dir, "dataset_config.yaml"))
+                    # 确保即使原有配置没有processed_root，也会添加
+                    temp_ds_config_path = os.path.join(temp_config_dir, "dataset_config.yaml")
+                    with open(temp_ds_config_path, 'r') as f:
+                        ds_conf = yaml.safe_load(f) or {}
+                    # 为所有dataset_id添加processed_root
+                    for ds_key in ds_conf:
+                        if isinstance(ds_conf[ds_key], dict):
+                            ds_conf[ds_key]['processed_root'] = str(PROCESSED_DATA_DIR)
+                    with open(temp_ds_config_path, 'w') as f:
+                        yaml.dump(ds_conf, f)
                 
             except Exception as e:
                 st.error(f"生成配置失败：{e}")
@@ -3224,6 +3237,7 @@ if selected_model:
 
                     ds_params = {
                         'data_root': ds_root,
+                        'processed_root': str(PROCESSED_DATA_DIR),  # 使用processed_data目录存放处理后的数据
                         'data_format': 'parquet',
                         'train_data': ds_train,
                         'valid_data': ds_valid,
@@ -3254,8 +3268,18 @@ if selected_model:
                     with open(os.path.join(temp_config_dir, "dataset_config.yaml"), 'w') as f:
                         yaml.dump(dataset_conf, f)
                 else:
-                    # Copy existing dataset config
+                    # Copy existing dataset config and ensure processed_root is set
                     shutil.copy(dataset_config_path, os.path.join(temp_config_dir, "dataset_config.yaml"))
+                    # 确保即使原有配置没有processed_root，也会添加
+                    temp_ds_config_path = os.path.join(temp_config_dir, "dataset_config.yaml")
+                    with open(temp_ds_config_path, 'r') as f:
+                        ds_conf = yaml.safe_load(f) or {}
+                    # 为所有dataset_id添加processed_root
+                    for ds_key in ds_conf:
+                        if isinstance(ds_conf[ds_key], dict):
+                            ds_conf[ds_key]['processed_root'] = str(PROCESSED_DATA_DIR)
+                    with open(temp_ds_config_path, 'w') as f:
+                        yaml.dump(ds_conf, f)
 
             except Exception as e:
                 st.error(f"生成配置失败：{e}")
