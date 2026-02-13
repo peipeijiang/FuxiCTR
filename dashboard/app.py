@@ -19,6 +19,12 @@ from datetime import datetime
 from code_editor import code_editor
 from collections import OrderedDict
 
+# 添加父目录到 sys.path 以导入 fuxictr 模块
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(CURRENT_DIR)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
 def get_gpu_options():
     options = [-1]
     labels = ["CPU (-1)"]
@@ -1216,6 +1222,293 @@ def render_dataset_config_body(
             return None
         return new_feature_cols
 
+    def _auto_filter_features(train_path, data_root=None, feature_cols=None):
+        """使用特征筛选pipeline筛选特征"""
+        import sys
+        import os
+
+        if not train_path:
+            st.warning("请先填写 train_data 路径后再筛选特征。")
+            return None
+
+        if feature_cols is None:
+            st.warning("请先更新特征后再筛选。")
+            return None
+
+        # 找到train_data文件
+        candidates = []
+        candidates.append(train_path)
+        if data_root:
+            candidates.append(os.path.join(data_root, train_path))
+        if selected_model:
+            model_dir = os.path.join(MODEL_ZOO_DIR, selected_model)
+            candidates.append(os.path.join(model_dir, train_path))
+        candidates.append(os.path.join(ROOT_DIR, train_path))
+
+        target = None
+        chosen_dir = None
+        for cand in candidates:
+            if not cand:
+                continue
+            abs_cand = os.path.abspath(cand)
+            if os.path.isfile(abs_cand) and abs_cand.endswith('.parquet'):
+                target = abs_cand
+                break
+            if os.path.isdir(abs_cand):
+                chosen_dir = abs_cand
+                parquet_files = sorted([f for f in os.listdir(abs_cand) if f.endswith('.parquet')])
+                if parquet_files:
+                    target = os.path.join(abs_cand, parquet_files[0])
+                    break
+
+        if target is None:
+            if chosen_dir:
+                st.error(f"在目录 {chosen_dir} 下未找到 parquet 文件。")
+            else:
+                st.error(f"未找到 train_data 文件：{train_path}")
+            return None
+
+        # 如果是目录，加载所有parquet文件并合并
+        if os.path.isdir(target):
+            import pandas as pd
+            parquet_files = sorted([f for f in os.listdir(target) if f.endswith('.parquet')])
+
+            if not parquet_files:
+                st.error(f"在目录 {target} 下未找到 parquet 文件。")
+                return None
+
+            st.info(f"📂 找到 {len(parquet_files)} 个parquet文件，正在合并...")
+
+            all_dfs = []
+            total_rows = 0
+            for i, f in enumerate(parquet_files):
+                file_path = os.path.join(target, f)
+                try:
+                    df = pd.read_parquet(file_path)
+                    all_dfs.append(df)
+                    total_rows += len(df)
+                    st.info(f"  已加载: {f} ({len(df)} 行)")
+                except Exception as e:
+                    st.warning(f"  跳过 {f}: {e}")
+
+            if not all_dfs:
+                st.error("无法加载任何parquet文件。")
+                return None
+
+            # 合并所有数据
+            st.info(f"🔄 正在合并 {len(all_dfs)} 个文件（共 {total_rows:,} 行）...")
+            merged_df = pd.concat(all_dfs, ignore_index=True)
+
+            # 保存到临时文件
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp:
+                temp_parquet_path = tmp.name
+
+            merged_df.to_parquet(temp_parquet_path, index=False)
+            target = temp_parquet_path
+            st.success(f"✅ 已合并 {len(all_dfs)} 个文件到临时数据 ({len(merged_df):,} 行)")
+
+            # 显示文件列表
+            with st.expander("📋 查看已加载的文件", expanded=False):
+                for f in parquet_files:
+                    st.write(f"- {f}")
+
+        # 提取特征名称
+        all_feature_names = []
+        sequence_features = []
+        for group in feature_cols:
+            if not isinstance(group, dict):
+                continue
+            names = group.get("name", [])
+            feat_type = group.get("type", "")
+            if isinstance(names, list):
+                all_feature_names.extend(names)
+                if feat_type == "sequence":
+                    sequence_features.extend(names)
+
+        if not all_feature_names:
+            st.warning("未找到特征列。")
+            return None
+
+        # 用于追踪临时文件
+        temp_parquet_path = None
+
+        try:
+            # 导入特征筛选pipeline
+            from fuxictr.feature_selection import MultiTaskFeatureSelectionPipeline
+            import pandas as pd
+
+            with st.spinner("正在运行特征筛选流程，请稍候..."):
+                # 创建pipeline实例
+                # 使用临时目录保存筛选结果
+                import tempfile
+                temp_output_dir = tempfile.mkdtemp(prefix="feature_selection_")
+
+                pipeline = MultiTaskFeatureSelectionPipeline(
+                    data_path=target,
+                    label_cols=['label_register', 'label_apply', 'label_credit'],
+                    output_dir=temp_output_dir
+                )
+
+                # 只运行Stage 1和Stage 3（Filter方法，含IV）
+                # Stage 1: 数据质量检查
+                st.info("📊 Stage 1/2: 数据质量检查...")
+                stage1_result = pipeline.stage1_data_quality_check()
+                remove_set1 = set(stage1_result['remove'])
+
+                # 获取初始特征列（排除label和序列特征）
+                import pandas as pd
+                df_sample = pd.read_parquet(target, columns=all_feature_names[:10])
+                # 改为candidate_features：Stage 3 现在支持数值和类别特征
+                candidate_features = [col for col in all_feature_names
+                                    if col not in sequence_features  # 排除序列特征
+                                    and col not in remove_set1]
+
+                # Stage 3: Filter方法（含IV，支持数值和类别特征）
+                st.info("🔍 Stage 2/2: Filter方法（含IV筛选，支持数值+类别）...")
+                stage3_result = pipeline.stage3_filter_methods(candidate_features)
+                remove_set3 = set(stage3_result['remove'])
+
+                # 合并移除集合
+                final_remove = remove_set1 | remove_set3
+
+                # 保留的特征
+                selected_features = [f for f in all_feature_names if f not in final_remove]
+
+                # 保存筛选结果到 session_state 以便持久化显示
+                filter_result_key = f"filter_result_{selected_name}"
+                st.session_state[filter_result_key] = {
+                    'all_feature_names': all_feature_names,
+                    'final_remove': list(final_remove),
+                    'selected_features': selected_features,
+                    'stage1_result': stage1_result,           # 新增
+                    'stage3_result': stage3_result,
+                    'timestamp': time.time()
+                }
+
+            # 显示筛选结果
+            st.success(f"✅ 特征筛选完成！")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("原始特征数", len(all_feature_names))
+            col2.metric("移除特征数", len(final_remove))
+            col3.metric("保留特征数", len(selected_features))
+
+            with st.expander("📊 查看筛选详情", expanded=False):
+                st.write(f"**移除的特征 ({len(final_remove)}个):**")
+                if final_remove:
+                    st.write(", ".join(list(final_remove)[:50]))
+                    if len(final_remove) > 50:
+                        st.write(f"... 还有 {len(final_remove) - 50} 个特征")
+
+                # IV分析结果
+                if 'iv_scores' in stage3_result:
+                    st.write("\n**IV分析结果:**")
+                    iv_scores = stage3_result['iv_scores']
+                    suspicious = {k: v for k, v in iv_scores.items() if v > 0.5}
+                    strong = {k: v for k, v in iv_scores.items() if 0.3 <= v < 0.5}
+                    medium = {k: v for k, v in iv_scores.items() if 0.1 <= v < 0.3}
+                    weak = {k: v for k, v in iv_scores.items() if 0.02 <= v < 0.1}
+
+                    if suspicious:
+                        st.warning(f"⚠️ 可疑特征 (IV>0.5): {len(suspicious)}个")
+                        st.json(dict(list(suspicious.items())[:10]))
+                    if strong:
+                        st.success(f"✓✓ 强预测特征 (0.3≤IV<0.5): {len(strong)}个")
+                    if medium:
+                        st.info(f"✓ 中等预测特征 (0.1≤IV<0.3): {len(medium)}个")
+                    if weak:
+                        st.write(f"⚠️ 弱预测特征 (0.02≤IV<0.1): {len(weak)}个")
+
+            # 重新构建feature_cols，只保留筛选后的特征
+            new_feature_cols = []
+            for group in feature_cols:
+                if not isinstance(group, dict):
+                    continue
+                original_names = group.get("name", [])
+                if not isinstance(original_names, list):
+                    continue
+
+                # 过滤保留的特征
+                filtered_names = [name for name in original_names if name in selected_features]
+
+                if filtered_names:
+                    new_group = OrderedDict(group)
+                    new_group["name"] = filtered_names
+                    new_feature_cols.append(new_group)
+
+            # 保留序列特征（不筛选）
+            for group in feature_cols:
+                if not isinstance(group, dict):
+                    continue
+                if group.get("type") == "sequence":
+                    if group not in new_feature_cols:
+                        new_feature_cols.append(group)
+
+            if not new_feature_cols:
+                st.warning("筛选后无剩余特征。")
+                # 清理临时文件
+                if temp_parquet_path and os.path.exists(temp_parquet_path):
+                    try:
+                        os.unlink(temp_parquet_path)
+                    except:
+                        pass
+                # 清理临时输出目录
+                if 'temp_output_dir' in locals() and os.path.exists(temp_output_dir):
+                    try:
+                        shutil.rmtree(temp_output_dir)
+                    except:
+                        pass
+                return None
+
+            # 清理临时文件
+            if temp_parquet_path and os.path.exists(temp_parquet_path):
+                try:
+                    os.unlink(temp_parquet_path)
+                except:
+                    pass
+            # 清理临时输出目录
+            if 'temp_output_dir' in locals() and os.path.exists(temp_output_dir):
+                try:
+                    shutil.rmtree(temp_output_dir)
+                except:
+                    pass
+
+            return new_feature_cols
+
+        except ImportError as e:
+            st.error(f"导入特征筛选模块失败: {e}")
+            st.info("请确保 fuxictr/feature_selection.py 存在")
+            # 清理临时文件
+            if temp_parquet_path and os.path.exists(temp_parquet_path):
+                try:
+                    os.unlink(temp_parquet_path)
+                except:
+                    pass
+            # 清理临时输出目录
+            if 'temp_output_dir' in locals() and os.path.exists(temp_output_dir):
+                try:
+                    shutil.rmtree(temp_output_dir)
+                except:
+                    pass
+            return None
+        except Exception as e:
+            st.error(f"特征筛选过程出错: {e}")
+            import traceback
+            st.error(traceback.format_exc())
+            # 清理临时文件
+            if temp_parquet_path and os.path.exists(temp_parquet_path):
+                try:
+                    os.unlink(temp_parquet_path)
+                except:
+                    pass
+            # 清理临时输出目录
+            if 'temp_output_dir' in locals() and os.path.exists(temp_output_dir):
+                try:
+                    shutil.rmtree(temp_output_dir)
+                except:
+                    pass
+            return None
+
     try:
         raw_data = yaml.safe_load(content) or {}
         if not isinstance(raw_data, dict):
@@ -1364,30 +1657,363 @@ def render_dataset_config_body(
                         placeholder="选择文件"
                     ) if options else st.text_input(display_label, current_val, key=widget_key)
                     if field == "train_data":
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("⚡ 更新特征", key=f"{widget_key}_update_feature_cols", help="读取 train_data 下首个 parquet 列并覆盖 feature_cols"):
+                                generated = _auto_update_feature_cols_from_parquet(entry[field], data_root_val)
+                                if generated is not None:
+                                    entry["feature_cols"] = generated
+                                    # 立即写入 buffer，切换模型返回时仍能看到更新
+                                    if buffer_key:
+                                        updated_data = OrderedDict(data)
+                                        updated_data[selected_name] = entry
+                                        _set_buffered_content(buffer_key, _yaml_dump(updated_data))
+                                    st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
+                                    st.rerun()
+                        with col2:
+                            current_feature_cols = entry.get("feature_cols")
+                            if st.button("🔍 筛选特征", key=f"{widget_key}_filter_features", help="使用IV等方法筛选特征（序列特征不筛选）"):
+                                filtered = _auto_filter_features(entry[field], data_root_val, current_feature_cols)
+                                if filtered is not None:
+                                    entry["feature_cols"] = filtered
+                                    # 立即写入 buffer
+                                    if buffer_key:
+                                        updated_data = OrderedDict(data)
+                                        updated_data[selected_name] = entry
+                                        _set_buffered_content(buffer_key, _yaml_dump(updated_data))
+                                    st.success("特征筛选完成并已更新（记得保存）")
+                                    st.rerun()
+
+                            # 显示筛选结果（持久化）- 使用全宽容器
+                            filter_result_key = f"filter_result_{selected_name}"
+                            if filter_result_key in st.session_state:
+                                result = st.session_state[filter_result_key]
+
+                                # 使用 st.container 使筛选结果占据全宽
+                                with st.container():
+                                    st.divider()
+                                    st.subheader("🔍 特征筛选结果")
+
+                                    # ============ 1. 顶部指标卡片（4列） ============
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    with col1:
+                                        st.metric("原始特征", len(result['all_feature_names']))
+                                    with col2:
+                                        stage1_removed = len(result.get('stage1_result', {}).get('removed_by_reason', {}).get('high_missing', [])) + \
+                                                         len(result.get('stage1_result', {}).get('removed_by_reason', {}).get('constant_features', [])) + \
+                                                         len(result.get('stage1_result', {}).get('removed_by_reason', {}).get('zero_variance', []))
+                                        st.metric("Stage 1 移除", stage1_removed)
+                                    with col3:
+                                        stage3_removed = len(result['final_remove']) - stage1_removed
+                                        st.metric("Stage 3 移除", stage3_removed)
+                                    with col4:
+                                        retention_rate = len(result['selected_features']) / len(result['all_feature_names']) * 100
+                                        st.metric("保留特征", len(result['selected_features']), delta=f"{retention_rate:.1f}%")
+
+                                    # ============ 2. Stage 1 详情 ============
+                                    stage1_result = result.get('stage1_result', {})
+                                    stage1_removed = stage1_result.get('removed_by_reason', {})
+
+                                    if any(stage1_removed.values()):
+                                        with st.expander("📊 Stage 1: 数据质量检查", expanded=False):
+                                            # 使用两列布局展示
+                                            col_a, col_b = st.columns(2)
+
+                                            with col_a:
+                                                # 常数特征
+                                                if stage1_removed.get('constant_features'):
+                                                    st.warning(f"**常数特征** ({len(stage1_removed['constant_features'])} 个)")
+                                                    for item in stage1_removed['constant_features']:
+                                                        st.text(f"  • {item['feature']} (唯一值={item['unique_count']})")
+
+                                                # 零方差
+                                                if stage1_removed.get('zero_variance'):
+                                                    st.warning(f"**零方差特征** ({len(stage1_removed['zero_variance'])} 个)")
+                                                    for item in stage1_removed['zero_variance']:
+                                                        st.text(f"  • {item['feature']}")
+
+                                            with col_b:
+                                                # 高缺失率
+                                                if stage1_removed.get('high_missing'):
+                                                    st.warning(f"**高缺失率特征** ({len(stage1_removed['high_missing'])} 个)")
+                                                    for item in stage1_removed['high_missing']:
+                                                        st.text(f"  • {item['feature']} (缺失率={item['missing_rate']:.1%})")
+
+                                    # ============ 3. Stage 3 详情 ============
+                                    stage3_result = result.get('stage3_result', {})
+                                    stage3_removed = stage3_result.get('removed_by_reason', {})
+
+                                    if any(stage3_removed.values()):
+                                        with st.expander("🔬 Stage 3: Filter 方法", expanded=True):
+                                            # 数值特征筛选
+                                            st.markdown("#### 【数值特征筛选】")
+
+                                            if stage3_removed.get('variance_threshold'):
+                                                cols = st.columns([2, 1])
+                                                with cols[0]:
+                                                    st.error(f"**方差阈值** (var < 0.01): {len(stage3_removed['variance_threshold'])} 个")
+                                                with cols[1]:
+                                                    if stage3_removed['variance_threshold']:
+                                                        with st.expander("查看列表"):
+                                                            for item in stage3_removed['variance_threshold']:
+                                                                st.text(f"  • {item['feature']} (var={item['variance']:.6f})")
+
+                                            if stage3_removed.get('correlation_redundancy'):
+                                                cols = st.columns([2, 1])
+                                                with cols[0]:
+                                                    st.error(f"**相关性冗余** (corr > 0.95): {len(stage3_removed['correlation_redundancy'])} 个")
+                                                with cols[1]:
+                                                    if stage3_removed['correlation_redundancy']:
+                                                        with st.expander("查看列表"):
+                                                            for item in stage3_removed['correlation_redundancy']:
+                                                                st.text(f"  • {item['feature']} ↔ {item['corr_with']} (r={item['correlation']:.3f})")
+
+                                            if stage3_removed.get('low_univariate_auc'):
+                                                cols = st.columns([2, 1])
+                                                with cols[0]:
+                                                    st.error(f"**低预测能力** (AUC < 0.05): {len(stage3_removed['low_univariate_auc'])} 个")
+                                                with cols[1]:
+                                                    if stage3_removed['low_univariate_auc']:
+                                                        with st.expander("查看列表"):
+                                                            for item in stage3_removed['low_univariate_auc']:
+                                                                st.text(f"  • {item['feature']} (AUC={item['auc_score']:.4f})")
+
+                                            if stage3_removed.get('low_iv_numeric'):
+                                                cols = st.columns([2, 1])
+                                                with cols[0]:
+                                                    st.error(f"**低IV数值特征** (IV < 0.02): {len(stage3_removed['low_iv_numeric'])} 个")
+                                                with cols[1]:
+                                                    if stage3_removed['low_iv_numeric']:
+                                                        with st.expander("查看列表"):
+                                                            for item in stage3_removed['low_iv_numeric']:
+                                                                st.text(f"  • {item['feature']} (IV={item['iv']:.4f})")
+
+                                            # 类别特征筛选
+                                            if stage3_removed.get('low_iv_categorical'):
+                                                st.markdown("#### 【类别特征筛选】")
+                                                cols = st.columns([2, 1])
+                                                with cols[0]:
+                                                    st.error(f"**低IV类别特征** (IV < 0.02): {len(stage3_removed['low_iv_categorical'])} 个")
+                                                with cols[1]:
+                                                    if stage3_removed['low_iv_categorical']:
+                                                        with st.expander("查看列表"):
+                                                            for item in stage3_removed['low_iv_categorical']:
+                                                                st.text(f"  • {item['feature']} (IV={item['iv']:.4f})")
+
+                                    # ============ 4. IV 详细分析（表格） ============
+                                    with st.expander("📈 IV 详细分析", expanded=False):
+                                        iv_scores = stage3_result.get('iv_scores', {})
+
+                                        if iv_scores:
+                                            # 构建DataFrame
+                                            iv_data = []
+                                            for feat, iv in iv_scores.items():
+                                                status = "✓✓" if iv >= 0.3 else "✓" if iv >= 0.1 else "⚠️" if iv >= 0.02 else "❌"
+                                                iv_data.append({
+                                                    '特征名称': feat,
+                                                    'IV值': f"{iv:.4f}",
+                                                    '预测强度': status,
+                                                    '保留状态': '✓ 保留' if iv >= 0.02 else '❌ 移除'
+                                                })
+
+                                            iv_df = pd.DataFrame(iv_data)
+                                            iv_df = iv_df.sort_values('IV值', ascending=False)
+
+                                            # 显示表格
+                                            st.dataframe(
+                                                iv_df,
+                                                use_container_width=True,
+                                                height=400,
+                                                hide_index=True,
+                                                column_config={
+                                                    '特征名称': st.column_config.TextColumn('特征名称', width='large'),
+                                                    'IV值': st.column_config.TextColumn('IV值', width='small'),
+                                                    '预测强度': st.column_config.TextColumn('预测强度', width='small'),
+                                                    '保留状态': st.column_config.TextColumn('保留状态', width='small')
+                                                }
+                                            )
+
+                                    # ============ 5. 筛选时间戳 ============
+                                    st.caption(f"筛选时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result['timestamp']))}")
+                elif field == "train_data":
+                    td_val = "" if entry.get(field) is None else str(entry.get(field))
+                    entry[field] = st.text_input(field, td_val, key=widget_key, placeholder="train_data parquet 路径")
+                    col1, col2 = st.columns(2)
+                    with col1:
                         if st.button("⚡ 更新特征", key=f"{widget_key}_update_feature_cols", help="读取 train_data 下首个 parquet 列并覆盖 feature_cols"):
-                            generated = _auto_update_feature_cols_from_parquet(entry[field], data_root_val)
+                            generated = _auto_update_feature_cols_from_parquet(entry[field], entry.get("data_root"))
                             if generated is not None:
                                 entry["feature_cols"] = generated
-                                # 立即写入 buffer，切换模型返回时仍能看到更新
                                 if buffer_key:
                                     updated_data = OrderedDict(data)
                                     updated_data[selected_name] = entry
                                     _set_buffered_content(buffer_key, _yaml_dump(updated_data))
                                 st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
                                 st.rerun()
-                elif field == "train_data":
-                    td_val = "" if entry.get(field) is None else str(entry.get(field))
-                    entry[field] = st.text_input(field, td_val, key=widget_key, placeholder="train_data parquet 路径")
-                    if st.button("⚡ 更新特征", key=f"{widget_key}_update_feature_cols", help="读取 train_data 下首个 parquet 列并覆盖 feature_cols"):
-                        generated = _auto_update_feature_cols_from_parquet(entry[field], entry.get("data_root"))
-                        if generated is not None:
-                            entry["feature_cols"] = generated
-                            if buffer_key:
-                                updated_data = OrderedDict(data)
-                                updated_data[selected_name] = entry
-                                _set_buffered_content(buffer_key, _yaml_dump(updated_data))
-                            st.success("已根据 parquet 列生成并覆盖 feature_cols（记得保存）")
-                            st.rerun()
+                    with col2:
+                        current_feature_cols = entry.get("feature_cols")
+                        if st.button("🔍 筛选特征", key=f"{widget_key}_filter_features", help="使用IV等方法筛选特征（序列特征不筛选）"):
+                            filtered = _auto_filter_features(entry[field], entry.get("data_root"), current_feature_cols)
+                            if filtered is not None:
+                                entry["feature_cols"] = filtered
+                                if buffer_key:
+                                    updated_data = OrderedDict(data)
+                                    updated_data[selected_name] = entry
+                                    _set_buffered_content(buffer_key, _yaml_dump(updated_data))
+                                st.success("特征筛选完成并已更新（记得保存）")
+                                st.rerun()
+
+                        # 显示筛选结果（持久化）- 使用全宽容器
+                        filter_result_key = f"filter_result_{selected_name}"
+                        if filter_result_key in st.session_state:
+                            result = st.session_state[filter_result_key]
+
+                            # 使用 st.container 使筛选结果占据全宽
+                            with st.container():
+                                st.divider()
+                                st.subheader("🔍 特征筛选结果")
+
+                                # ============ 1. 顶部指标卡片（4列） ============
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("原始特征", len(result['all_feature_names']))
+                                with col2:
+                                    stage1_removed = len(result.get('stage1_result', {}).get('removed_by_reason', {}).get('high_missing', [])) + \
+                                                     len(result.get('stage1_result', {}).get('removed_by_reason', {}).get('constant_features', [])) + \
+                                                     len(result.get('stage1_result', {}).get('removed_by_reason', {}).get('zero_variance', []))
+                                    st.metric("Stage 1 移除", stage1_removed)
+                                with col3:
+                                    stage3_removed = len(result['final_remove']) - stage1_removed
+                                    st.metric("Stage 3 移除", stage3_removed)
+                                with col4:
+                                    retention_rate = len(result['selected_features']) / len(result['all_feature_names']) * 100
+                                    st.metric("保留特征", len(result['selected_features']), delta=f"{retention_rate:.1f}%")
+
+                                # ============ 2. Stage 1 详情 ============
+                                stage1_result = result.get('stage1_result', {})
+                                stage1_removed = stage1_result.get('removed_by_reason', {})
+
+                                if any(stage1_removed.values()):
+                                    with st.expander("📊 Stage 1: 数据质量检查", expanded=False):
+                                        # 使用两列布局展示
+                                        col_a, col_b = st.columns(2)
+
+                                        with col_a:
+                                            # 常数特征
+                                                if stage1_removed.get('constant_features'):
+                                                    st.warning(f"**常数特征** ({len(stage1_removed['constant_features'])} 个)")
+                                                    for item in stage1_removed['constant_features']:
+                                                        st.text(f"  • {item['feature']} (唯一值={item['unique_count']})")
+
+                                                # 零方差
+                                                if stage1_removed.get('zero_variance'):
+                                                    st.warning(f"**零方差特征** ({len(stage1_removed['zero_variance'])} 个)")
+                                                    for item in stage1_removed['zero_variance']:
+                                                        st.text(f"  • {item['feature']}")
+
+                                        with col_b:
+                                            # 高缺失率
+                                            if stage1_removed.get('high_missing'):
+                                                st.warning(f"**高缺失率特征** ({len(stage1_removed['high_missing'])} 个)")
+                                                for item in stage1_removed['high_missing']:
+                                                    st.text(f"  • {item['feature']} (缺失率={item['missing_rate']:.1%})")
+
+                                # ============ 3. Stage 3 详情 ============
+                                stage3_result = result.get('stage3_result', {})
+                                stage3_removed = stage3_result.get('removed_by_reason', {})
+
+                                if any(stage3_removed.values()):
+                                    with st.expander("🔬 Stage 3: Filter 方法", expanded=True):
+                                        # 数值特征筛选
+                                        st.markdown("#### 【数值特征筛选】")
+
+                                        if stage3_removed.get('variance_threshold'):
+                                            cols = st.columns([2, 1])
+                                            with cols[0]:
+                                                st.error(f"**方差阈值** (var < 0.01): {len(stage3_removed['variance_threshold'])} 个")
+                                            with cols[1]:
+                                                if stage3_removed['variance_threshold']:
+                                                    with st.expander("查看列表"):
+                                                        for item in stage3_removed['variance_threshold']:
+                                                            st.text(f"  • {item['feature']} (var={item['variance']:.6f})")
+
+                                        if stage3_removed.get('correlation_redundancy'):
+                                            cols = st.columns([2, 1])
+                                            with cols[0]:
+                                                st.error(f"**相关性冗余** (corr > 0.95): {len(stage3_removed['correlation_redundancy'])} 个")
+                                            with cols[1]:
+                                                if stage3_removed['correlation_redundancy']:
+                                                    with st.expander("查看列表"):
+                                                        for item in stage3_removed['correlation_redundancy']:
+                                                            st.text(f"  • {item['feature']} ↔ {item['corr_with']} (r={item['correlation']:.3f})")
+
+                                        if stage3_removed.get('low_univariate_auc'):
+                                            cols = st.columns([2, 1])
+                                            with cols[0]:
+                                                st.error(f"**低预测能力** (AUC < 0.05): {len(stage3_removed['low_univariate_auc'])} 个")
+                                            with cols[1]:
+                                                if stage3_removed['low_univariate_auc']:
+                                                    with st.expander("查看列表"):
+                                                        for item in stage3_removed['low_univariate_auc']:
+                                                            st.text(f"  • {item['feature']} (AUC={item['auc_score']:.4f})")
+
+                                        if stage3_removed.get('low_iv_numeric'):
+                                            cols = st.columns([2, 1])
+                                            with cols[0]:
+                                                st.error(f"**低IV数值特征** (IV < 0.02): {len(stage3_removed['low_iv_numeric'])} 个")
+                                            with cols[1]:
+                                                if stage3_removed['low_iv_numeric']:
+                                                    with st.expander("查看列表"):
+                                                        for item in stage3_removed['low_iv_numeric']:
+                                                            st.text(f"  • {item['feature']} (IV={item['iv']:.4f})")
+
+                                        # 类别特征筛选
+                                        if stage3_removed.get('low_iv_categorical'):
+                                            st.markdown("#### 【类别特征筛选】")
+                                            cols = st.columns([2, 1])
+                                            with cols[0]:
+                                                st.error(f"**低IV类别特征** (IV < 0.02): {len(stage3_removed['low_iv_categorical'])} 个")
+                                            with cols[1]:
+                                                if stage3_removed['low_iv_categorical']:
+                                                    with st.expander("查看列表"):
+                                                        for item in stage3_removed['low_iv_categorical']:
+                                                            st.text(f"  • {item['feature']} (IV={item['iv']:.4f})")
+
+                                # ============ 4. IV 详细分析（表格） ============
+                                with st.expander("📈 IV 详细分析", expanded=False):
+                                    iv_scores = stage3_result.get('iv_scores', {})
+
+                                    if iv_scores:
+                                        # 构建DataFrame
+                                        iv_data = []
+                                        for feat, iv in iv_scores.items():
+                                            status = "✓✓" if iv >= 0.3 else "✓" if iv >= 0.1 else "⚠️" if iv >= 0.02 else "❌"
+                                            iv_data.append({
+                                                '特征名称': feat,
+                                                'IV值': f"{iv:.4f}",
+                                                '预测强度': status,
+                                                '保留状态': '✓ 保留' if iv >= 0.02 else '❌ 移除'
+                                            })
+
+                                        iv_df = pd.DataFrame(iv_data)
+                                        iv_df = iv_df.sort_values('IV值', ascending=False)
+
+                                        # 显示表格
+                                        st.dataframe(
+                                            iv_df,
+                                            use_container_width=True,
+                                            height=400,
+                                            hide_index=True,
+                                            column_config={
+                                                '特征名称': st.column_config.TextColumn('特征名称', width='large'),
+                                                'IV值': st.column_config.TextColumn('IV值', width='small'),
+                                                '预测强度': st.column_config.TextColumn('预测强度', width='small'),
+                                                '保留状态': st.column_config.TextColumn('保留状态', width='small')
+                                            }
+                                        )
+
+                                # ============ 5. 筛选时间戳 ============
+                                st.caption(f"筛选时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result['timestamp']))}")
                 else:
                     entry[field] = _render_yaml_field(field, entry.get(field), widget_key, is_fullscreen=is_fullscreen)
 
