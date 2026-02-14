@@ -13,9 +13,9 @@ Industry-Standard Multi-Task Feature Selection Pipeline
 ┌─────────────────────────────────────────────────────────────────┐
 │  Stage 1: 数据质量检查 (Data Quality Check)                      │
 │  Stage 2: 数据泄露检测 (Data Leakage Detection)                   │
-│  Stage 3: 基础特征筛选 (Filter Methods)                          │
 │  Stage 4: 多任务特异性分析 (Multi-Task Specific Analysis)        │
-│  Stage 5: Wrapper/Embedded方法 (Model-Based Selection)          │
+│  Stage 5: Wrapper/Embedded方法 (Model-Based Selection) │  Stage 3: 基础特征筛选 (Filter Methods)                          │
+         │
 │  Stage 6: 特征稳定性验证 (Stability Validation)                  │
 │  Stage 7: 业务逻辑审查 (Domain Review)                           │
 └─────────────────────────────────────────────────────────────────┘
@@ -490,6 +490,11 @@ class MultiTaskFeatureSelectionPipeline:
 
         remove_features = set()
         feature_iv_scores = {}
+        feature_iv_scores_by_task = {}
+        feature_scores_by_task = {}
+        # Multi-task aggregation: prefer features that are both useful and stable across tasks.
+        iv_multitask_alpha = 0.3
+        iv_threshold = 0.02
 
         # 新增：按筛选原因分组
         removed_by_reason = {
@@ -576,6 +581,7 @@ class MultiTaskFeatureSelectionPipeline:
                     feature_data = self.df[col].fillna(0)  # 简单填充
 
                     scores = []
+                    task_scores = {}
                     for label in self.label_cols:
                         label_data = self.df[label]
 
@@ -587,13 +593,16 @@ class MultiTaskFeatureSelectionPipeline:
                                     label_data[valid_mask],
                                     feature_data[valid_mask]
                                 )
-                                scores.append(abs(auc - 0.5) * 2)  # 归一化到[0,1]
+                                task_score = abs(auc - 0.5) * 2  # 归一化到[0,1]
+                                scores.append(task_score)
+                                task_scores[label] = task_score
                             except:
                                 pass
 
                     if scores:
                         avg_score = np.mean(scores)
                         feature_scores[col] = avg_score
+                        feature_scores_by_task[col] = task_scores
 
                 except Exception as e:
                     pass
@@ -622,18 +631,24 @@ class MultiTaskFeatureSelectionPipeline:
                     continue
 
                 try:
-                    # 使用第一个label计算IV (二分类)
-                    label_data = self.df[self.label_cols[0]]
-                    iv_score = self._calculate_iv(self.df[col], label_data, n_bins=10)
+                    # 多任务IV：分别计算后做聚合（mean - alpha * std）
+                    iv_by_task = {}
+                    for label in self.label_cols:
+                        label_data = self.df[label]
+                        iv_by_task[label] = self._calculate_iv(self.df[col], label_data, n_bins=10)
 
+                    iv_values = list(iv_by_task.values())
+                    iv_score = float(np.mean(iv_values) - iv_multitask_alpha * np.std(iv_values))
                     feature_iv_scores[col] = iv_score
+                    feature_iv_scores_by_task[col] = iv_by_task
 
                     # 输出IV分析
                     if iv_score < 0.02:
                         remove_features.add(col)
                         removed_by_reason['low_iv_numeric'].append({
                             'feature': col,
-                            'iv': iv_score
+                            'iv': iv_score,
+                            'iv_by_task': iv_by_task
                         })
                         print(f"  ❌ REMOVE: {col} (IV={iv_score:.4f} - No predictive power)")
                     elif iv_score < 0.1:
@@ -648,11 +663,7 @@ class MultiTaskFeatureSelectionPipeline:
                 except Exception as e:
                     pass
 
-            # 移除低IV特征
-            low_iv_numeric = [f for f, iv in feature_iv_scores.items() if iv < iv_threshold]
-            remove_features.update(low_iv_numeric)
-
-            print(f"\n  ℹ️  {len(low_iv_numeric)} numeric features with IV < {iv_threshold}")
+            print(f"\n  ℹ️  {len(removed_by_reason['low_iv_numeric'])} numeric features with IV < {iv_threshold}")
         else:
             print("\n  ℹ️  No numeric features to filter")
             feature_scores = {}
@@ -672,18 +683,24 @@ class MultiTaskFeatureSelectionPipeline:
 
             for col in categorical_features:
                 try:
-                    # 使用第一个label计算IV (二分类)
-                    label_data = self.df[self.label_cols[0]]
-                    iv_score = self._calculate_woe_iv_categorical(self.df[col], label_data)
+                    # 多任务IV：分别计算后做聚合（mean - alpha * std）
+                    iv_by_task = {}
+                    for label in self.label_cols:
+                        label_data = self.df[label]
+                        iv_by_task[label] = self._calculate_woe_iv_categorical(self.df[col], label_data)
 
+                    iv_values = list(iv_by_task.values())
+                    iv_score = float(np.mean(iv_values) - iv_multitask_alpha * np.std(iv_values))
                     feature_iv_scores[col] = iv_score
+                    feature_iv_scores_by_task[col] = iv_by_task
 
                     # 输出IV分析
                     if iv_score < 0.02:
                         remove_features.add(col)
                         removed_by_reason['low_iv_categorical'].append({
                             'feature': col,
-                            'iv': iv_score
+                            'iv': iv_score,
+                            'iv_by_task': iv_by_task
                         })
                         print(f"  ❌ REMOVE: {col} (IV={iv_score:.4f} - No predictive power)")
                     elif iv_score < 0.1:
@@ -722,9 +739,12 @@ class MultiTaskFeatureSelectionPipeline:
         self.results['stage3_filter'] = {
             'remove': list(remove_features),
             'feature_scores': feature_scores,
+            'feature_scores_by_task': feature_scores_by_task,
             'iv_scores': feature_iv_scores,
+            'iv_scores_by_task': feature_iv_scores_by_task,
             'removed_by_reason': removed_by_reason,
             'iv_threshold': iv_threshold,
+            'iv_multitask_alpha': iv_multitask_alpha,
             'numeric_count': len(numeric_features),
             'categorical_count': len(categorical_features),
             'sequence_count': len(sequence_features)
@@ -736,6 +756,8 @@ class MultiTaskFeatureSelectionPipeline:
             'remove': list(remove_features),
             'scores': feature_scores,
             'iv_scores': feature_iv_scores,
+            'scores_by_task': feature_scores_by_task,
+            'iv_scores_by_task': feature_iv_scores_by_task,
             'removed_by_reason': removed_by_reason
         }
 
@@ -889,6 +911,7 @@ class MultiTaskFeatureSelectionPipeline:
         try:
             import lightgbm as lgb
             from sklearn.preprocessing import LabelEncoder
+            aggregation_beta = 0.2
 
             # 准备数值特征
             X_numeric = self.df[numeric_features].fillna(0) if numeric_features else pd.DataFrame()
@@ -918,16 +941,8 @@ class MultiTaskFeatureSelectionPipeline:
                 return {'top_features': [], 'importance': {}, 'categorical_features': []}
 
             X = pd.concat(X_list, axis=1)
-            Y = self.df[self.label_cols[0]].fillna(0)  # 使用第一个label作为示例
 
             print(f"\n[2/3] Training LightGBM with {X.shape[1]} features...")
-
-            # 训练模型（支持类别特征）
-            train_data = lgb.Dataset(
-                X,
-                label=Y,
-                categorical_feature=categorical_features if categorical_features else 'auto'
-            )
 
             params = {
                 'objective': 'binary',
@@ -935,16 +950,43 @@ class MultiTaskFeatureSelectionPipeline:
                 'num_leaves': 31,
                 'learning_rate': 0.05,
                 'n_estimators': 100,
+                'num_threads': 1,
+                'force_col_wise': True,
+                'deterministic': True,
                 'min_data_per_group': 1,
                 'cat_l2': 10,
                 'cat_smooth': 10
             }
 
-            model = lgb.train(params, train_data)
+            per_task_importance = {}
+            for label in self.label_cols:
+                y = self.df[label].fillna(0)
+                if y.nunique(dropna=True) < 2:
+                    print(f"  ⚠️  Skip task {label}: label has < 2 classes")
+                    continue
 
-            # 获取特征重要性
-            importance = model.feature_importance()
-            feature_importance = dict(zip(X.columns, importance))
+                train_data = lgb.Dataset(
+                    X,
+                    label=y,
+                    categorical_feature=categorical_features if categorical_features else 'auto'
+                )
+                model = lgb.train(params, train_data)
+                importance = model.feature_importance(importance_type='gain')
+                per_task_importance[label] = dict(zip(X.columns, importance))
+
+            if not per_task_importance:
+                raise ValueError("no valid task labels for stage5 model training")
+
+            # 聚合任务重要性: mean - beta * std，偏向稳定共享特征
+            feature_importance = {}
+            for feature in X.columns:
+                task_vals = [
+                    task_imp.get(feature, 0.0)
+                    for task_imp in per_task_importance.values()
+                ]
+                mean_imp = float(np.mean(task_vals))
+                std_imp = float(np.std(task_vals))
+                feature_importance[feature] = mean_imp - aggregation_beta * std_imp
 
             # 排序并选择top-k
             sorted_features = sorted(feature_importance.items(),
@@ -968,6 +1010,8 @@ class MultiTaskFeatureSelectionPipeline:
             self.results['stage5_model'] = {
                 'top_features': top_features,
                 'feature_importance': feature_importance,
+                'per_task_importance': per_task_importance,
+                'importance_aggregation': f'mean - {aggregation_beta} * std',
                 'numeric_features': numeric_features,
                 'categorical_features': categorical_features,
                 'encoding': 'label_encoding'
@@ -978,6 +1022,7 @@ class MultiTaskFeatureSelectionPipeline:
             return {
                 'top_features': top_features,
                 'importance': feature_importance,
+                'per_task_importance': per_task_importance,
                 'categorical_features': categorical_features
             }
 
