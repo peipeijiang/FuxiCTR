@@ -1092,7 +1092,8 @@ def render_dataset_config_body(
     lines,
     is_fullscreen=False,
     selected_model=None,
-    buffer_key=None
+    buffer_key=None,
+    simple_fields_columns=2
 ):
     """Render dataset_config.yaml as structured form while hiding feature_cols."""
 
@@ -1981,15 +1982,17 @@ if __name__ == "__main__":
     complex_fields = [f for f in visible_fields if f not in simple_fields]
 
     active_label_cols = _extract_label_names(entry)
+    simple_col_count = 1 if int(simple_fields_columns or 1) <= 1 else 2
     pending_filter_result = None
-    for idx in range(0, len(simple_fields), 2):
-        cols = st.columns(2)
-        for offset in range(2):
+    for idx in range(0, len(simple_fields), simple_col_count):
+        cols = st.columns(simple_col_count) if simple_col_count > 1 else None
+        for offset in range(simple_col_count):
             if idx + offset >= len(simple_fields):
                 break
             field = simple_fields[idx + offset]
             widget_key = f"{editor_key}_{selected_name}_{field}"
-            with cols[offset]:
+            target_container = cols[offset] if cols is not None else st.container()
+            with target_container:
                 data_root_val = entry.get("data_root")
                 file_options = _list_data_files(data_root_val)
 
@@ -3121,21 +3124,24 @@ if selected_model:
                 buffer_key=buf_script_key
             )
         else:
-            # Normal View: full-width editors to avoid nested-column limits and narrow layout.
-            new_ds_content = render_editor_section(
-                "dataset_config.yaml", "dataset_config.yaml", ds_content, "yaml", 15, "dataset", "application/x-yaml",
-                config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config,
-                body_renderer=render_dataset_config_body,
-                buffer_key=buf_ds_key
-            )
-
-            st.markdown("---")
-            new_md_content = render_editor_section(
-                "model_config.yaml", "model_config.yaml", md_content, "yaml", 15, "model", "application/x-yaml",
-                config_info["model_config.yaml"]["type"] == "custom", reset_user_config,
-                body_renderer=render_model_config_body,
-                buffer_key=buf_md_key
-            )
+            # Normal View: dataset/model side-by-side, while dataset inner field grid uses single-column
+            # to avoid triggering streamlit nested-columns limit.
+            col1, col2 = st.columns(2)
+            with col1:
+                new_ds_content = render_editor_section(
+                    "dataset_config.yaml", "dataset_config.yaml", ds_content, "yaml", 15, "dataset", "application/x-yaml",
+                    config_info["dataset_config.yaml"]["type"] == "custom", reset_user_config,
+                    body_renderer=render_dataset_config_body,
+                    body_kwargs={"simple_fields_columns": 1},
+                    buffer_key=buf_ds_key
+                )
+            with col2:
+                new_md_content = render_editor_section(
+                    "model_config.yaml", "model_config.yaml", md_content, "yaml", 15, "model", "application/x-yaml",
+                    config_info["model_config.yaml"]["type"] == "custom", reset_user_config,
+                    body_renderer=render_model_config_body,
+                    buffer_key=buf_md_key
+                )
 
             st.markdown("---")
             new_script_content = render_editor_section(
