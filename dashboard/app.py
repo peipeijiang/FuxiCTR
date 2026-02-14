@@ -1365,16 +1365,16 @@ if __name__ == "__main__":
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(worker_code)
 
-            # 先走标准路径（类别特征参与 LightGBM categorical split）
-            result, err, code = _run_stage5_worker(use_categorical=True)
+            # 先走稳定路径：禁用 categorical split（类别已做 label-encoding）
+            result, err, code = _run_stage5_worker(use_categorical=False)
             if not err:
                 return result, None
 
-            # 若失败，自动重试：禁用 categorical split，避免某些数据触发 LightGBM 原生崩溃
-            retry_result, retry_err, retry_code = _run_stage5_worker(use_categorical=False)
+            # 若稳定路径仍失败，再尝试 categorical split
+            retry_result, retry_err, retry_code = _run_stage5_worker(use_categorical=True)
             if not retry_err:
                 warn = (
-                    f"首次 Stage 5 失败（{err}），已切换稳定模式（categorical_mode=disabled）并成功完成。"
+                    f"稳定路径失败（{err}），已切换 categorical split 模式并成功完成。"
                 )
                 return retry_result, warn
 

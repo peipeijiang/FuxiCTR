@@ -868,7 +868,7 @@ class MultiTaskFeatureSelectionPipeline:
     # ============================================================
     # Stage 5: 模型方法 (Embedded Methods)
     # ============================================================
-    def stage5_model_based_selection(self, features: List[str], top_k: int = 100, use_categorical: bool = True) -> Dict:
+    def stage5_model_based_selection(self, features: List[str], top_k: int = 100, use_categorical: bool = False) -> Dict:
         """
         阶段5: 基于模型的特征筛选（支持数值特征和类别特征）
 
@@ -914,7 +914,7 @@ class MultiTaskFeatureSelectionPipeline:
             aggregation_beta = 0.2
 
             # 准备数值特征
-            X_numeric = self.df[numeric_features].fillna(0) if numeric_features else pd.DataFrame()
+            X_numeric = self.df[numeric_features].fillna(0).astype('float32') if numeric_features else pd.DataFrame()
 
             # 准备类别特征（Label Encoding）
             X_categorical = pd.DataFrame(index=self.df.index)
@@ -925,7 +925,7 @@ class MultiTaskFeatureSelectionPipeline:
                 # 处理NaN值：填充为'UNKNOWN'后再编码
                 X_categorical[col] = le.fit_transform(
                     self.df[col].fillna('UNKNOWN').astype(str)
-                )
+                ).astype('int32')
                 le_dict[col] = le
                 print(f"  Encoded {col}: {len(le.classes_)} unique values")
 
