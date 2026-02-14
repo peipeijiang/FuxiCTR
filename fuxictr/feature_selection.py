@@ -868,7 +868,7 @@ class MultiTaskFeatureSelectionPipeline:
     # ============================================================
     # Stage 5: 模型方法 (Embedded Methods)
     # ============================================================
-    def stage5_model_based_selection(self, features: List[str], top_k: int = 100) -> Dict:
+    def stage5_model_based_selection(self, features: List[str], top_k: int = 100, use_categorical: bool = True) -> Dict:
         """
         阶段5: 基于模型的特征筛选（支持数值特征和类别特征）
 
@@ -968,7 +968,7 @@ class MultiTaskFeatureSelectionPipeline:
                 train_data = lgb.Dataset(
                     X,
                     label=y,
-                    categorical_feature=categorical_features if categorical_features else 'auto'
+                    categorical_feature=(categorical_features if (use_categorical and categorical_features) else 'auto')
                 )
                 model = lgb.train(params, train_data)
                 importance = model.feature_importance(importance_type='gain')
@@ -1011,6 +1011,7 @@ class MultiTaskFeatureSelectionPipeline:
                 'top_features': top_features,
                 'feature_importance': feature_importance,
                 'per_task_importance': per_task_importance,
+                'use_categorical': use_categorical,
                 'importance_aggregation': f'mean - {aggregation_beta} * std',
                 'numeric_features': numeric_features,
                 'categorical_features': categorical_features,
@@ -1023,6 +1024,7 @@ class MultiTaskFeatureSelectionPipeline:
                 'top_features': top_features,
                 'importance': feature_importance,
                 'per_task_importance': per_task_importance,
+                'use_categorical': use_categorical,
                 'categorical_features': categorical_features
             }
 

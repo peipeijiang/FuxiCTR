@@ -1247,12 +1247,10 @@ def render_dataset_config_body(
         return default_labels
 
     def _safe_stage5_model_selection(data_path, label_cols, features, top_k=150):
-        """在子进程执行 Stage 5，避免 LightGBM 原生崩溃直接杀死 Streamlit 主进程。"""
+        """在子进程执行 Stage 5，崩溃时自动重试更稳配置，避免杀死 Streamlit 主进程。"""
         import tempfile
 
         temp_dir = tempfile.mkdtemp(prefix="stage5_worker_")
-        input_path = os.path.join(temp_dir, "input.json")
-        output_path = os.path.join(temp_dir, "output.json")
         script_path = os.path.join(temp_dir, "run_stage5.py")
 
         worker_code = """
@@ -1296,7 +1294,8 @@ def main():
         )
         result = pipeline.stage5_model_based_selection(
             payload["features"],
-            top_k=payload.get("top_k", 150)
+            top_k=payload.get("top_k", 150),
+            use_categorical=payload.get("use_categorical", True)
         )
         out = {"ok": True, "result": result}
     except Exception as exc:
@@ -1313,20 +1312,21 @@ if __name__ == "__main__":
     main()
 """
 
-        payload = {
-            "data_path": data_path,
-            "label_cols": label_cols or ["label_register", "label_apply", "label_credit"],
-            "features": features or [],
-            "top_k": top_k,
-            "output_dir": temp_dir,
-            "project_root": ROOT_DIR
-        }
+        def _run_stage5_worker(use_categorical):
+            input_path = os.path.join(temp_dir, f"input_{int(bool(use_categorical))}.json")
+            output_path = os.path.join(temp_dir, f"output_{int(bool(use_categorical))}.json")
+            payload = {
+                "data_path": data_path,
+                "label_cols": label_cols or ["label_register", "label_apply", "label_credit"],
+                "features": features or [],
+                "top_k": top_k,
+                "output_dir": temp_dir,
+                "project_root": ROOT_DIR,
+                "use_categorical": bool(use_categorical)
+            }
 
-        try:
             with open(input_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(worker_code)
 
             env = os.environ.copy()
             env.setdefault("OMP_NUM_THREADS", "1")
@@ -1349,17 +1349,43 @@ if __name__ == "__main__":
                     out = json.load(f)
                 if out.get("ok"):
                     result = out.get("result") or {}
-                    return result if isinstance(result, dict) else {}, None
+                    if isinstance(result, dict):
+                        result["categorical_mode"] = "enabled" if use_categorical else "disabled"
+                    return (result if isinstance(result, dict) else {}), None, proc.returncode
                 error = out.get("error") or "unknown error in Stage 5 worker"
-                return {}, error
+                return {}, error, proc.returncode
 
             if proc.returncode == -11:
-                return {}, "LightGBM 子进程段错误（SIGSEGV），已自动跳过 Stage 5。"
+                return {}, "LightGBM 子进程段错误（SIGSEGV）", proc.returncode
             stderr_tail = (proc.stderr or "").strip().splitlines()[-3:]
-            return {}, ("Stage 5 子进程失败: " + " | ".join(stderr_tail)) if stderr_tail else "Stage 5 子进程失败。"
+            msg = ("Stage 5 子进程失败: " + " | ".join(stderr_tail)) if stderr_tail else "Stage 5 子进程失败。"
+            return {}, msg, proc.returncode
+
+        try:
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(worker_code)
+
+            # 先走标准路径（类别特征参与 LightGBM categorical split）
+            result, err, code = _run_stage5_worker(use_categorical=True)
+            if not err:
+                return result, None
+
+            # 若失败，自动重试：禁用 categorical split，避免某些数据触发 LightGBM 原生崩溃
+            retry_result, retry_err, retry_code = _run_stage5_worker(use_categorical=False)
+            if not retry_err:
+                warn = (
+                    f"首次 Stage 5 失败（{err}），已切换稳定模式（categorical_mode=disabled）并成功完成。"
+                )
+                return retry_result, warn
+
+            final_err = (
+                f"Stage 5 两次执行均失败：第一次[{err}] (code={code})；"
+                f"第二次[{retry_err}] (code={retry_code})。"
+            )
+            return {}, final_err
 
         except subprocess.TimeoutExpired:
-            return {}, "Stage 5 执行超时（30分钟），已自动跳过。"
+            return {}, "Stage 5 执行超时（30分钟）。"
         except Exception as exc:
             return {}, f"Stage 5 子进程异常: {exc}"
         finally:
@@ -1569,7 +1595,7 @@ if __name__ == "__main__":
                         top_k=resolved_stage5_top_k
                     )
                     if stage5_error:
-                        st.warning(f"Stage 5 已跳过：{stage5_error}")
+                        st.warning(f"Stage 5 提示：{stage5_error}")
                     top_features = set(stage5_result.get('top_features', []))
                     if top_features:
                         # 序列特征保持直通；非序列特征由Stage5 top_features决定
@@ -1806,13 +1832,19 @@ if __name__ == "__main__":
         stage5_result = result.get("stage5_result", {}) or {}
         stage5_error = result.get("stage5_error")
         if stage5_error:
-            st.warning(f"Stage 5 未完成：{stage5_error}")
+            if stage5_result:
+                st.info(f"Stage 5 稳定性提示：{stage5_error}")
+            else:
+                st.warning(f"Stage 5 未完成：{stage5_error}")
         if stage5_result:
             with st.expander("Stage 5: 模型方法（多任务聚合）", expanded=False):
                 top_features = stage5_result.get("top_features", []) or []
                 stage5_top_k = result.get("stage5_top_k")
                 if stage5_top_k:
                     st.caption(f"Stage 5 Top-K: {stage5_top_k}")
+                categorical_mode = stage5_result.get("categorical_mode")
+                if categorical_mode:
+                    st.caption(f"categorical_mode: {categorical_mode}")
                 importance = stage5_result.get("importance", {}) or {}
                 top_set = set(top_features)
                 st.write(f"selected(top_k): {len(top_features)}")
@@ -1831,8 +1863,11 @@ if __name__ == "__main__":
                     st.write("importance（多任务聚合分数）")
                     st.dataframe(imp_df, use_container_width=True, hide_index=True)
                 elif top_features:
+                    st.caption("当前无可用 importance 分数（可能是 Stage 5 回退路径）。")
                     st.dataframe(
-                        pd.DataFrame({"feature": top_features[:200], "selected": True}),
+                        pd.DataFrame(
+                            {"feature": top_features[:200], "importance": None, "selected": True}
+                        ),
                         use_container_width=True,
                         hide_index=True
                     )
